@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Boku-nano 意味ASTレコード",
+  "description": "data/ast/asts.jsonl の1行。実装計画 §4 のレコード形式に対応する。フィールド名は改訂版 L358-381 のデータレコードに合わせてある。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ast_id",
+    "semantic_ast",
+    "difficulty",
+    "categories",
+    "op_set",
+    "canonical_order",
+    "binding_slots",
+    "uses_k",
+    "semantic_hash",
+    "behavior_hash",
+    "always_empty",
+    "is_identity",
+    "source",
+    "created_at",
+    "generator_version",
+    "schema_version",
+    "registry_version",
+    "probe_set_version"
+  ],
+  "properties": {
+    "ast_id": {
+      "description": "コーパス内の連番。実行をまたぐ安定キーではない（target や seed を変えると振り直される）。実行をまたいで同一性を見るときは semantic_hash を使う。",
+      "type": "string",
+      "pattern": "^ast-[0-9]{6}$"
+    },
+    "semantic_ast": {
+      "description": "AST本体。op名の順序付き列（改訂版 L251, L362）。定数は含めない（L256）。演算子頻度の集計キーでもある（L458）。",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": { "type": "string" }
+    },
+    "difficulty": {
+      "description": "組み合わせた操作の個数（改訂版 L386）。層化抽出の層であり、選抜でも配分を保つ（L457）。",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4
+    },
+    "categories": {
+      "description": "各opのカテゴリをAST順に並べたもの。重複し得る。",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": { "enum": ["filter", "map", "order", "slice"] }
+    },
+    "op_set": {
+      "description": "順序を落としてソートしたop集合。予約ペアの引き当てキー（改訂版 L472, L485）。",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "type": "string" }
+    },
+    "canonical_order": {
+      "description": "カテゴリ順（抽出→変換→並べ替え→切り出し）に従っているか。記録するだけで列挙は制限しない（L297）。分析とアブレーション用。",
+      "type": "boolean"
+    },
+    "binding_slots": {
+      "description": "k参照opの位置と、そのスロット単独で使えるリテラル値域（改訂版 L269-277）。具体値は持たない。",
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["index", "op", "literal_domain"],
+        "properties": {
+          "index": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "op": { "type": "string" },
+          "literal_domain": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "integer", "minimum": 1, "maximum": 10 }
+          }
+        }
+      }
+    },
+    "uniform_literal_domain": {
+      "description": "全スロットを同一値に具体化する場合に使えるリテラル。各スロット値域の共通部分。k参照opが無ければ空配列。改訂版 L269 の検証等価性の成立条件（実装計画 §2.4）。",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1, "maximum": 10 }
+    },
+    "uses_k": {
+      "description": "kを参照するopを1つ以上含むか。",
+      "type": "boolean"
+    },
+    "semantic_hash": {
+      "description": "op列の正準JSONのSHA-256。分割の単位（改訂版 L465）であり、漏洩検査第1項（L520）。",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "behavior_hash": {
+      "description": "固定入力集合に対する参照インタプリタの出力列のSHA-256（改訂版 L388, L536）。漏洩検査第5項（L524）。可換な操作対と意味的縮退の検出に使う。",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "always_empty": {
+      "description": "固定入力集合の全入力で出力が空になるか（[even, odd] など）。除去はせず注記する。選抜の判断材料（実装計画 §2.5, §8 確認事項⑦）。",
+      "type": "boolean"
+    },
+    "is_identity": {
+      "description": "固定入力集合の全入力で入力と同じ出力になるか。除去はせず注記する。",
+      "type": "boolean"
+    },
+    "source": {
+      "description": "由来。AST層では常に rule。改訂版 L57 と L53 により、教師モデル由来・開発支援AI由来の意味ASTは存在してはいけない。",
+      "const": "rule"
+    },
+    "created_at": {
+      "description": "生成時刻（RFC 3339, UTC）。各ハッシュと ast_id の入力には含めない。含めると同一seedでの再実行が別物になる（実装計画 §4）。",
+      "type": "string",
+      "format": "date-time"
+    },
+    "generator_version": {
+      "description": "生成器の版。手で上げる。参照インタプリタの修正でも上げること（behavior_hash が変わるため）。",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "このレコード形式の版。",
+      "type": "integer",
+      "minimum": 1
+    },
+    "registry_version": {
+      "description": "opレジストリの版。op名・カテゴリ・リテラル値域を変えたら上げる。",
+      "type": "string"
+    },
+    "probe_set_version": {
+      "description": "behavior_hash の算出に使った固定入力集合の版。",
+      "type": "string"
+    }
+  }
+}

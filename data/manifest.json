@@ -1,0 +1,64 @@
+{
+  "created_at": "2026-08-05T13:42:36Z",
+  "generator_version": "v0.1",
+  "registry_version": "ops24-v1",
+  "probe_set_version": "v1",
+  "schema_version": 1,
+  "probe_count": 148,
+  "record_count": 267744,
+  "by_difficulty": {
+    "1": 24,
+    "2": 552,
+    "3": 12144,
+    "4": 255024
+  },
+  "op_frequency": {
+    "abs": 44069,
+    "add_k": 44069,
+    "asc": 44069,
+    "desc": 44069,
+    "double": 44069,
+    "even": 44069,
+    "every_other": 44069,
+    "ge": 44069,
+    "gt": 44069,
+    "le": 44069,
+    "lt": 44069,
+    "mul_k": 44069,
+    "multiple_of": 44069,
+    "negate": 44069,
+    "negative": 44069,
+    "odd": 44069,
+    "positive": 44069,
+    "reverse": 44069,
+    "square": 44069,
+    "sub_k": 44069,
+    "take_first": 44069,
+    "take_last": 44069,
+    "triple": 44069,
+    "zero": 44069
+  },
+  "category_frequency": {
+    "filter": 440690,
+    "map": 352552,
+    "order": 132207,
+    "slice": 132207
+  },
+  "canonical_order_ratio": 0.168351,
+  "k_slot_distribution": {
+    "0": 26404,
+    "1": 93110,
+    "2": 102150,
+    "3": 41040,
+    "4": 5040
+  },
+  "behavior_hash": {
+    "distinct": 35523,
+    "collision_groups": 27246,
+    "largest_group": 59775,
+    "asts_in_collisions": 259467
+  },
+  "always_empty_count": 59775,
+  "is_identity_count": 2,
+  "max_output_abs_digits": 8
+}

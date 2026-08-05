@@ -1,0 +1,25 @@
+# バインディング展開の設定（document_EXPAND.md §2.1 を移植）。
+#
+#   python -m scripts.build_bindings
+#   python -m scripts.build_bindings binding.include_literal=false
+
+asts_in: data/asts.jsonl
+out: data/bindings.jsonl
+manifest_out: data/bindings_manifest.json
+
+binding:
+  # リテラル版を作るか。既定は true（パラメータ版とリテラル版の両方を作る）。
+  #
+  # false にすると、k を参照する op を持つ AST でも「k は k のまま」の
+  # パラメータ版だけになる。パラメータ版は常に作るので、そちらに切り替えは置かない
+  # （false 固定にすると k 参照 op を持たない AST が1件も作れなくなるため）。
+  include_literal: true
+
+hydra:
+  # 既定では outputs/YYYY-MM-DD/HH-MM-SS/ に作業ディレクトリを移してしまい、
+  # data/... のような相対パスが意図しない場所に出る。
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null
