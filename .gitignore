@@ -2,3 +2,5 @@
 
 # 容量制限で乗らないため
 data/asts.jsonl
+
+__pycache__/

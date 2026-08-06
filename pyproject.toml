@@ -36,6 +36,7 @@ teacher = [
     "huggingface-hub>=0.34",
     "gptqmodel>=7.3",      # AWQ 読み込み。BACKEND.TORCH で使う
     "torchvision",         # gptqmodel の import 依存
+    "pyyaml>=6",           # scripts/teacher/op_seeds.yaml を読む
 ]
 
 [tool.pytest.ini_options]

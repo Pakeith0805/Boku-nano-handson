@@ -37,7 +37,14 @@ Boku-nano-handson/
 │   ├── README.md                   本ディレクトリの説明
 │   ├── build_probe_set.py          固定入力集合を作って凍結する
 │   ├── build_ast_corpus.py         意味ASTコーパス（参照台帳）を構築する
-│   └── build_bindings.py           ASTごとのバインディングを列挙する（Hydra駆動）
+│   ├── build_bindings.py           ASTごとのバインディングを列挙する（Hydra駆動）
+│   ├── build_phrases.py            24opの言い回しを教師モデルに生成させる
+│   │
+│   └── teacher/                    教師モデル関連。ここだけ teacher グループに依存する
+│       ├── README.md               環境構築の手順と分担
+│       ├── qwen.py                 Qwen3-4B-AWQ の読み込み・プロンプト組み立て・生成
+│       ├── op_seeds.yaml           24opの意味・正例・禁止語（人間が書く資産）
+│       └── phrase_filters.py       生成された言い回しの正規化と機械的な棄却
 │
 ├── conf/
 │   └── binding.yaml                build_bindings.py 用のHydra設定
@@ -49,7 +56,12 @@ Boku-nano-handson/
     ├── asts.jsonl                  意味ASTコーパス267,744件（参照台帳、全数）
     ├── manifest.json               由来と統計
     ├── bindings.jsonl              ASTごとのバインディング一覧
-    └── bindings_manifest.json      バインディング生成の要約（版・パラメータ/リテラル内訳）
+    ├── bindings_manifest.json      バインディング生成の要約（版・パラメータ/リテラル内訳）
+    │
+    └── teacher/
+        ├── manifest.json           教師モデルの環境の由来（疎通確認の記録）
+        ├── phrases_raw.jsonl       生成された言い回しの候補（棄却分も理由つきで残す）
+        └── phrases_manifest.json   生成1回分の要約（op別採用数・棄却理由の内訳）
 ```
 
 ## それぞれのファイルの簡単な説明
@@ -103,6 +115,25 @@ op評価とprobe setはどちらも呼び出し側から渡す（依存性注入
 `data/asts.jsonl`の各レコードに対して`enumerate_bindings`でバインディングを列挙し、
 `data/bindings.jsonl`と`data/bindings_manifest.json`を書き出す駆動スクリプト。設定は
 Hydra（`conf/binding.yaml`）経由で読む。
+
+**`scripts/build_phrases.py`**
+`scripts/teacher/op_seeds.yaml`の種から24opぶんのプロンプトを組み、教師モデル（Qwen3-4B-AWQ）に
+日本語の言い回しを生成させ、`phrase_filters`で弾いて`data/teacher/phrases_raw.jsonl`に
+由来つきで記録する駆動スクリプト。出力は辞書ではなく**候補**であり、承認は人間が行う。
+
+**`scripts/teacher/qwen.py`**
+教師モデルに実際に触る唯一のファイル。revision固定・`BACKEND.TORCH`・非thinkingモードという
+疎通確認で通った構成を、読み込み・プロンプト組み立て・生成の3関数にしたもの。
+プロンプトの中身も出力のパースも持たない。
+
+**`scripts/teacher/op_seeds.yaml`**
+24opそれぞれの意味・言い換えの正例2つ・使ってはいけない語。**人間が書く資産**であり、
+opの意味の確定はここが持つ（教師モデルに意味を推測させない）。`k`参照opの表現は`{k}`を含む。
+
+**`scripts/teacher/phrase_filters.py`**
+生成された行の正規化（記号・番号・鉤括弧・句点・括弧書きの除去）と、機械的に判定できる棄却
+（文型・長さ・使用禁止語・`k`の出現回数・重複）。**意味の正しさは判定しない。**
+教師モデルにも`torch`にも依存しないので、GPU無しで単体テストできる。
 
 **`conf/binding.yaml`**
 `build_bindings.py`のHydra設定。入出力パスと、リテラル版も作るか（`binding.include_literal`、
