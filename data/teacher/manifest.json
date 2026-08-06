@@ -1,0 +1,43 @@
+{
+  "model": {
+    "id": "Qwen/Qwen3-4B-AWQ",
+    "revision": "74d4bd2bd4bff9cafc9345221320bffb08b406a3",
+    "quantization": "AWQ (4bit)",
+    "backend": "BACKEND.TORCH",
+    "thinking_mode": "disabled (enable_thinking=False)"
+  },
+  "libraries": {
+    "python": "3.12.13",
+    "torch": "2.13.0+cu130",
+    "transformers": "5.14.1",
+    "gptqmodel": "7.3.2"
+  },
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 5090",
+    "compute_capability": [
+      12,
+      0
+    ],
+    "torch_arch_list": [
+      "sm_75",
+      "sm_80",
+      "sm_86",
+      "sm_90",
+      "sm_100",
+      "sm_120"
+    ],
+    "vram_total_gib": 31.36,
+    "vram_free_before_load_gib": 30.86,
+    "driver_version": "595.84"
+  },
+  "smoke_test": {
+    "prompt": "「リストの各要素を2倍にする」を、別の日本語の言い方で1つだけ挙げてください。",
+    "completion": "リストの各要素を2倍にする別の日本語の言い方としては、  \n\n**「リストの要素をすべて2倍にする」**  \nが考えられます。",
+    "load_seconds": 2.06,
+    "vram_after_load_gib": 3.11,
+    "generated_tokens": 36,
+    "tokens_per_second": 10.03
+  },
+  "checked_at": "2026-08-06T17:38:32.337622+09:00",
+  "notes": []
+}
