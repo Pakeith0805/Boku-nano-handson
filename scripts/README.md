@@ -102,7 +102,7 @@ python -m scripts.build_bindings binding.include_literal=false   # パラメー�
 ```
 python -m scripts.build_phrases --dry-run              # プロンプトを表示して終わる（GPU不要）
 python -m scripts.build_phrases --ops even reverse gt  # opを絞って試す
-python -m scripts.build_phrases                        # 本番（24op×5ラウンド、50分前後）
+python -m scripts.build_phrases                        # 本番（24op×5ラウンド、40分前後）
 python -m scripts.build_phrases --below-target         # 査読の承認数が目標未満のopだけ回す
 ```
 
@@ -200,7 +200,7 @@ python -m scripts.build_phrases --below-target         # 査読の承認数が�
 | 名前 | 説明 |
 | --- | --- |
 | `TARGET` | 1opあたり集めたい採用数の下限（10） |
-| `BASE_ROUNDS` / `MAX_ROUNDS` | 目標に届いていても必ず回す回数（5）と、未達opに追加で回す上限（16） |
+| `BASE_ROUNDS` / `MAX_ROUNDS` | 目標に届いていても必ず回す回数（5）と、未達opに追加で回す上限（3200）。済んだラウンドは飛ばされるので、上限を上げて流し直せば「続きのラウンド」だけが走る |
 | `N_PER_REQUEST` | 1リクエストで要求する言い換えの個数（8）。**多く求めるほど質が落ちる**（15個で試すとモデルが数合わせに捏造を始めた） |
 | `MAX_NEW_TOKENS` | 1リクエストの生成上限（384）。足りないと最後の行が途中で切れる |
 | `TEMPERATURE` / `TOP_P` | サンプリングの設定。貪欲法は使えない（毎回同じ出力になり、ラウンドを重ねる意味が消える） |
@@ -269,13 +269,14 @@ python -m scripts.review_phrases --compile                    # 査読はせず�
 
 | 名前 | 説明 |
 | --- | --- |
-| `RAW` / `DECISIONS` | 候補（`data/teacher/phrases_raw.jsonl`）と判定の置き場所 |
+| `RAW` / `SEEDS_PATH` / `DECISIONS` | 候補（`data/teacher/phrases_raw.jsonl`）・種（`scripts/teacher/op_seeds.yaml`。`meaning`を画面に出すために読む）・判定の置き場所 |
 | `DICT_VERSION` | 辞書の版（`v1`）。`DICT_OUT`・`MANIFEST_OUT`のファイル名に入る |
 | `DICT_OUT` / `MANIFEST_OUT` | `phrases/ja_phrases_v1.yaml` と `phrases/ja_phrases_v1_manifest.json` |
 | `TARGET` | 1opあたり集めたい採用数の下限（10）。`build_phrases.py`と同じ値 |
 | `SIMILAR` | 「採用済みのこれと似ている」と警告する類似度の閾値（0.72、`difflib`の比） |
 | `NON_JA_KANJI` | 日本語では使わない字体（簡体字）。含まれていたら警告するが**却下はしない**（網羅的な一覧ではないため） |
-| `ORIGIN_FIELDS` | 判定に焼き付ける生成の由来のフィールド名 |
+| `ORIGIN_FIELDS` | 判定に焼き付ける生成の由来のフィールド名（`run_id` `round` `seed` `prompt_sha256` `prompt_version` `created_at`） |
+| `KEYS` | 画面下に出すキー操作の一覧（下の「キー操作」と同じもの） |
 
 ### 関数
 

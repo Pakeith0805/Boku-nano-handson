@@ -85,7 +85,9 @@ op出現頻度、カテゴリ頻度、`canonical_order`比率、`behavior_hash`�
 
 実行1回ぶんの由来。**再現に要るものはすべてここに書く**（1行1実行、追記）。モデルの同一性
 （id・revision・量子化・バックエンド・thinkingの有無）、推論スタックの版、GPU、system prompt、
-sampling設定と種の決め方、`op_seeds.yaml`と`phrases/phrase_decisions.jsonl`の内容ハッシュ、引数。
+sampling設定と種の決め方、`op_seeds.yaml`の内容ハッシュ（`seeds_sha256`）、引数。
+査読の状態（`phrases/phrase_decisions.jsonl`）のハッシュは**持たない**——判定はプロンプトに
+展開されて`prompts.jsonl`に全文が残っており、生成の再現にはそちらで足りるためである。
 開始時に一度書き、終了時に結果（`finished_at`・`produced`）を足して同じ`run_id`の行を差し替える
 （途中で落ちた実行の由来も残るようにするため。`finished_at`が`null`のままなら未完了の実行）。
 

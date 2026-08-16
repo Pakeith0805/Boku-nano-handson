@@ -8,9 +8,13 @@ Boku-nano-handson/
 ├── README.md                       このプロジェクトの方針（全部自分の手で実装する）
 ├── pyproject.toml                  依存と pytest 設定
 ├── uv.lock                         依存の固定
+├── .python-version                 3.12.13 に固定（3.13系だと教師モデルのTritonが落ちる）
+├── build_phrases.log               言い回し生成の実行ログ（投げたプロンプトと出力の記録）
+├── build_bindings.log              バインディング生成の実行ログ
 │
 ├── src/                            実装本体
 │   ├── README.md                   本ファイル。ファイル地図
+│   ├── __init__.py                 generator_version（全レコードに焼き付ける生成器の版）
 │   ├── limits.py                   入力条件（xs長さ0〜20・要素±100・k 1〜10）
 │   │
 │   ├── interp/
@@ -75,6 +79,12 @@ Boku-nano-handson/
 `phrases/`は、まだ査読を1件も通していなければ存在しない。
 
 ## それぞれのファイルの簡単な説明
+
+**`src/__init__.py`**
+`BOKU_GENERATOR_VERSION`（現在`v0.1`）だけを持つ。全レコードの`generator_version`に載る値で、
+手で上げる。**参照インタプリタを直したときも上げること**——`behavior_hash`はその実装に依存する
+のに、`registry_version`も`probe_set_version`もインタプリタの変更では動かないため、この定数だけが
+唯一の記録になる。
 
 **`src/limits.py`**
 課題文が定める`solve(xs, k)`の入力の範囲（`xs`の長さ・要素・`k`の値域）。参照インタプリタと
@@ -141,8 +151,9 @@ Hydra（`conf/binding.yaml`）経由で読む。
 出力を`data/`でなく`phrases/`に置くのは、人間の判断が入っていて再生成できないためである。
 
 **`scripts/teacher/qwen.py`**
-教師モデルに実際に触る唯一のファイル。revision固定・`BACKEND.TORCH`・非thinkingモードという
-疎通確認で通った構成を、読み込み・プロンプト組み立て・生成の3関数にしたもの。
+教師モデルに実際に触る唯一のファイル。revision固定・`BACKEND.AWQ_GEMM_TRITON`・非thinkingモード
+という構成を、読み込み・プロンプト組み立て・生成の3関数にしたもの（バックエンドの選択は生成速度を
+5.6倍変えるので、既定の自動選択に任せない）。
 プロンプトの中身も出力のパースも持たない。生成物に焼き付ける由来（モデルの同一性と
 推論スタックの版）を**呼び出し時点の実測値として**返す`provenance()`もここにある。
 

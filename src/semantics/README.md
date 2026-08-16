@@ -83,6 +83,7 @@ probe setの作り方も知らない。
 
 | 関数 | 説明 |
 | --- | --- |
+| `_sha256(text)` | UTF-8でエンコードした文字列のSHA-256（16進64桁）。両ハッシュの土台になる内部ヘルパー |
 | `canonical_json(ops)` | op列だけの正準表現（定数・由来情報は含めない） |
 | `semantic_hash(ops)` | op列の正準JSONのハッシュ。順序が違えば別の値になる |
 | `behavior_outputs(ops, probes, evaluate)` | 固定入力集合に対する出力列 |

@@ -27,12 +27,16 @@ Qwen3-4B-AWQは読み込み後で約2.5GiBしか使わないので、通常は�
 
 ## 1. Pythonのバージョンを固定する
 
-このリポジトリの`.venv`は現状Python 3.13系でできているが、**3.13系だとビルド時に
-`Python.h`（開発ヘッダ）が無くてTritonのランタイムコンパイルが落ちる**（主プロジェクトで
-実際に踏んだ問題。AWQ/bf16どちらでも起きる、Pythonのバージョンの問題であってモデルの問題ではない）。
+**3.13系だとビルド時に`Python.h`（開発ヘッダ）が無くてTritonのランタイムコンパイルが落ちる**
+（主プロジェクトで実際に踏んだ問題。AWQ/bf16どちらでも起きる、Pythonのバージョンの問題であって
+モデルの問題ではない）。
 
 `.python-version`を`3.12.13`に固定済み（このマシンには既に`uv python install`で入っている）。
 `uv sync`すると自動的にこのバージョンで`.venv`が作り直される。
+
+このバージョン固定は**バックエンドの選択に直結する**。3.12系ではヘッダが揃っていてTritonが
+正常にビルドできるので、`BACKEND.AWQ_GEMM_TRITON`（下の 3-1）が使える。3.13系に戻すと
+Tritonが落ちて`BACKEND.TORCH`しか選べなくなり、生成速度が約1/5.6になる。
 
 ## 2. 依存関係を入れる
 
@@ -63,10 +67,21 @@ uv sync --group teacher
 **`autoawq`は使わない。** 0.2.9で更新が止まっていて（Blackwell以前のGPU向け）、
 `transformers`5.x系はAWQの読み込みに`gptqmodel`を要求する。
 
-**バックエンドは`BACKEND.TORCH`を明示する。** `gptqmodel`の既定（自動選択）は
+**バックエンドは`BACKEND.AWQ_GEMM_TRITON`を明示する。** `gptqmodel`の既定（自動選択）は
 `AwqMarlinLinear`を選ぶが、そのJITビルドが`CUDA_HOME`（nvcc）を要求して失敗する
-（このマシンにCUDA toolkitは入っていない）。`BACKEND.TORCH`はコンパイル不要で、
-「24opぶんのプロンプトを1回ずつ流す」程度の用途には十分な速度が出る。
+（このマシンにCUDA toolkitは入っていない）。**選択は速度を5.6倍変える**ので、既定に任せず
+明示すること。同じマシンでの実測（4B-AWQ、128トークン生成、貪欲法）は次のとおり。
+
+| バックエンド | 生成速度 | 備考 |
+| --- | ---: | --- |
+| `AWQ_GEMM_TRITON` | **62.9 tok/s** | TritonのJIT。nvcc不要。**これを使う** |
+| `TORCH` | 11.2 tok/s | 素朴な逆量子化。コンパイル不要だが遅い |
+| `AWQ_GEMM` / `AWQ_MARLIN` | — | `CUDA_HOME`（nvcc）を要求して失敗 |
+| `AWQ_TORCH_FUSED` | — | CUDAデバイス非対応 |
+
+当初`BACKEND.TORCH`にしていたのはPython 3.13系でTritonのビルドが落ちたためで、
+**その前提は 1. のバージョン固定でもう成り立たない**。nvccを要求する系は入れればさらに速く
+なる可能性があるが、Tritonで十分なので追っていない。
 
 ```python
 from gptqmodel import BACKEND, GPTQModel
@@ -74,7 +89,7 @@ from gptqmodel import BACKEND, GPTQModel
 model = GPTQModel.load(
     "Qwen/Qwen3-4B-AWQ",
     revision="74d4bd2bd4bff9cafc9345221320bffb08b406a3",  # revisionを固定する。mainのままだと上流の更新で黙って別モデルになる
-    backend=BACKEND.TORCH,
+    backend=BACKEND.AWQ_GEMM_TRITON,
     device="cuda:0",
 )
 ```
@@ -108,15 +123,16 @@ assert "<think>\n\n</think>" in text
 `data/teacher/phrases_runs.jsonl`へ1行ずつ追記する形にしてある（各候補の`run_id`から引ける）。
 疎通確認だけを別に記録したい場合も、上書きされないファイルに追記すること。
 
-参考までに、主プロジェクトでの実測値（同じGPU・同じモデル）：
+参考までに、同じGPU・同じモデルでの実測値：
 
 | | 値 |
 | --- | --- |
 | 読み込み | 2.2秒 |
 | VRAM（読み込み後） | 2.50 GiB |
-| 生成速度 | 9.6 tok/s |
+| 生成速度 | 62.9 tok/s（`AWQ_GEMM_TRITON`） |
 
-大きくズレる場合は構成が違う（バックエンドが`BACKEND.TORCH`になっていない等）を疑うこと。
+大きくズレる場合は構成が違う（バックエンドが`BACKEND.TORCH`に落ちている等）を疑うこと。
+11 tok/s 前後ならまさにそれで、Tritonのビルドに失敗して`TORCH`相当の経路を通っている。
 
 ## 4. ここまで通ったら次へ
 
@@ -151,7 +167,7 @@ assert "<think>\n\n</think>" in text
 | --- | --- |
 | `MODEL_ID` | `"Qwen/Qwen3-4B-AWQ"` |
 | `REVISION` | 固定するrevision。`main`のままだと上流の更新で黙って別モデルになる |
-| `BACKEND_NAME` | `BACKEND.TORCH`。既定の自動選択は`AwqMarlinLinear`を選び、そのJITビルドが`CUDA_HOME`を要求して失敗する |
+| `BACKEND_NAME` | `BACKEND.AWQ_GEMM_TRITON`。既定の自動選択は`AwqMarlinLinear`を選び、そのJITビルドが`CUDA_HOME`を要求して失敗する。定数のdocstringにバックエンド別の実測速度がある（選択で5.6倍変わる） |
 | `QUANTIZATION` | 量子化方式の表示名（`"AWQ (4bit)"`）。由来の記録に載る |
 | `ENABLE_THINKING` | thinkingモードを使うか（`False`）。由来に記録するので、切り替えたら記録も自動で変わる |
 
@@ -254,7 +270,8 @@ opの意味を推測させると必ずズレる（`reverse`と`desc`、`every_ot
 | 症状 | 原因 | 対処 |
 | --- | --- | --- |
 | Tritonのビルドで`Python.h`が無いと落ちる | venvが3.13系（開発ヘッダ無し） | `.python-version`を3.12.13に固定し`uv sync`し直す |
-| `AwqMarlinLinear`のビルドが`CUDA_HOME`要求で失敗 | `gptqmodel`の既定バックエンド | `BACKEND.TORCH`を明示する |
+| `AwqMarlinLinear`のビルドが`CUDA_HOME`要求で失敗 | `gptqmodel`の既定バックエンド | `BACKEND.AWQ_GEMM_TRITON`を明示する |
+| 生成が11 tok/s前後しか出ない | Tritonが使えず`TORCH`相当に落ちている | Pythonが3.12系か確認する（1.）。3.13系ならTritonがビルドできない |
 | `torch.cuda.get_arch_list()`に`sm_120`が無い | torchのビルドがBlackwell非対応 | torchを入れ直す（`pyproject.toml`の`torch>=2.9`で足りるはずだが、念のため確認） |
 | CUDAが使えない / VRAM不足 | 他プロセスと共有中、または未起動 | `nvidia-smi`で空きを確認。学習（Phase 3相当）と同時に走らせない |
 | AWQがどうしても動かない | 稀にあり得る | `Qwen/Qwen3-4B`（bf16）にフォールバックしてよい。ただしその判断と理由を`manifest.json`に明記する。VRAMは29GB空いているのでbf16でも動く |
