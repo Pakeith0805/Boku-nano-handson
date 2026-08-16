@@ -1,0 +1,169 @@
+{
+  "model": {
+    "id": "Qwen/Qwen3-4B-AWQ",
+    "revision": "74d4bd2bd4bff9cafc9345221320bffb08b406a3"
+  },
+  "params": {
+    "temperature": 0.9,
+    "top_p": 0.95,
+    "max_new_tokens": 384,
+    "n_per_request": 8,
+    "seed_base": 20260806,
+    "target": 10
+  },
+  "prompt_version": "v2",
+  "registry_version": "ops24-v1",
+  "totals": {
+    "lines": 42289,
+    "accepted": 2042,
+    "rejected": 40247
+  },
+  "per_op": {
+    "abs": {
+      "accepted": 104,
+      "rounds_run": 24
+    },
+    "add_k": {
+      "accepted": 52,
+      "rounds_run": 112
+    },
+    "asc": {
+      "accepted": 108,
+      "rounds_run": 32
+    },
+    "desc": {
+      "accepted": 39,
+      "rounds_run": 16
+    },
+    "double": {
+      "accepted": 50,
+      "rounds_run": 48
+    },
+    "even": {
+      "accepted": 136,
+      "rounds_run": 3200
+    },
+    "every_other": {
+      "accepted": 93,
+      "rounds_run": 24
+    },
+    "ge": {
+      "accepted": 70,
+      "rounds_run": 24
+    },
+    "gt": {
+      "accepted": 69,
+      "rounds_run": 16
+    },
+    "le": {
+      "accepted": 46,
+      "rounds_run": 80
+    },
+    "lt": {
+      "accepted": 64,
+      "rounds_run": 16
+    },
+    "mul_k": {
+      "accepted": 190,
+      "rounds_run": 360
+    },
+    "multiple_of": {
+      "accepted": 49,
+      "rounds_run": 48
+    },
+    "negate": {
+      "accepted": 76,
+      "rounds_run": 24
+    },
+    "negative": {
+      "accepted": 76,
+      "rounds_run": 16
+    },
+    "odd": {
+      "accepted": 107,
+      "rounds_run": 1000
+    },
+    "positive": {
+      "accepted": 71,
+      "rounds_run": 16
+    },
+    "reverse": {
+      "accepted": 66,
+      "rounds_run": 16
+    },
+    "square": {
+      "accepted": 66,
+      "rounds_run": 24
+    },
+    "sub_k": {
+      "accepted": 133,
+      "rounds_run": 96
+    },
+    "take_first": {
+      "accepted": 99,
+      "rounds_run": 24
+    },
+    "take_last": {
+      "accepted": 128,
+      "rounds_run": 24
+    },
+    "triple": {
+      "accepted": 51,
+      "rounds_run": 16
+    },
+    "zero": {
+      "accepted": 99,
+      "rounds_run": 16
+    }
+  },
+  "rejection_reasons": {
+    "duplicate": 39979,
+    "not_terminal_form": 219,
+    "bad_char": 18,
+    "forbidden:乗": 14,
+    "forbidden:加える": 6,
+    "too_short": 4,
+    "polite_form": 4,
+    "forbidden:追加": 3
+  },
+  "below_target": [],
+  "cross_op_duplicates": {
+    "各要素の正負を逆にする": [
+      "abs",
+      "negate"
+    ],
+    "各要素に{k}を合わせる": [
+      "add_k",
+      "mul_k"
+    ],
+    "各要素に{k}を重ねる": [
+      "add_k",
+      "mul_k"
+    ],
+    "順序を整える": [
+      "asc",
+      "desc"
+    ],
+    "各要素を{k}で引き算する": [
+      "mul_k",
+      "sub_k"
+    ],
+    "各要素を{k}で調整する": [
+      "mul_k",
+      "sub_k"
+    ],
+    "各要素を{k}で処理する": [
+      "mul_k",
+      "sub_k"
+    ],
+    "各要素を{k}で縮小する": [
+      "mul_k",
+      "sub_k"
+    ],
+    "各要素を{k}で影響させる": [
+      "mul_k",
+      "sub_k"
+    ]
+  },
+  "generated_at": "2026-08-16T22:49:10.459299+09:00"
+}
