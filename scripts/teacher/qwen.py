@@ -1,6 +1,6 @@
 """教師モデル（Qwen3-4B-AWQ）を呼ぶための最小の層。
 
-疎通確認で通った構成——revision固定・`BACKEND.TORCH`・非thinkingモード——をそのまま関数に
+疎通確認で通った構成——revision固定・バックエンド固定・非thinkingモード——をそのまま関数に
 しただけのものである。**プロンプトの中身も出力のパースもここでは扱わない。**
 それは`scripts/build_phrases.py`の担当である。`scripts/teacher/README.md` §4 が言う
 「環境の問題とプロンプトの問題を混ぜない」を、モジュールの境界としても引いておく。
@@ -10,9 +10,9 @@
 いないのは、フィルタをGPU無しでテストできるようにするためであり、`build_phrases.py`が
 `qwen`の import を関数の中まで遅らせているのは`--dry-run`を`torch`無しで動かすためである。
 
-以下3定数が、実際に使うモデルを決める唯一の場所である。`data/teacher/manifest.json`
-（環境の由来の正本）に記録された `id`・`revision`・`backend` と食い違わせないこと。
-変えたら疎通確認からやり直し、あちらも書き直す。
+以下5定数が、実際に使うモデルを決める唯一の場所である。`provenance()`がここから読んで
+生成物に焼き付けるので、記録と食い違う余地はない（以前は`data/teacher/manifest.json`に
+別途書いていたが、実行ごとの記録に一本化した）。変えたら疎通確認からやり直すこと。
 """
 
 from __future__ import annotations
@@ -26,15 +26,75 @@ from gptqmodel import BACKEND, GPTQModel
 
 MODEL_ID = "Qwen/Qwen3-4B-AWQ"
 REVISION = "74d4bd2bd4bff9cafc9345221320bffb08b406a3"
-BACKEND_NAME = BACKEND.TORCH
+BACKEND_NAME = BACKEND.AWQ_GEMM_TRITON
+"""AWQの行列積カーネル。**バックエンドの選択は速度を5.6倍変える。**
+
+同じマシンでの実測（4B-AWQ、128トークン生成、貪欲法）:
+
+| バックエンド | 生成速度 | 備考 |
+| --- | ---: | --- |
+| `TORCH` | 11.2 tok/s | 素朴な逆量子化。コンパイル不要だが遅い |
+| `AWQ_GEMM_TRITON` | **62.9 tok/s** | TritonのJIT。nvcc不要 |
+| `AWQ_GEMM` / `AWQ_MARLIN` | — | `CUDA_HOME`（nvcc）を要求して失敗 |
+| `AWQ_TORCH_FUSED` | — | CUDAデバイス非対応 |
+
+当初`TORCH`にしていたのは、`.venv`がPython 3.13系でTritonのランタイムコンパイルが
+`Python.h`（開発ヘッダ）を見つけられず落ちたためである。**その前提はもう成り立たない**——
+`.python-version`を3.12.13に固定した時点でヘッダは揃っており、Tritonは正常にビルドできる。
+
+nvcc を要求する系（`AWQ_GEMM`・`AWQ_MARLIN`）はこのマシンにCUDA toolkitが無いので使えない。
+入れればさらに速くなる可能性はあるが、Tritonで十分な速度が出ているので追っていない。
+"""
+
+QUANTIZATION = "AWQ (4bit)"
+ENABLE_THINKING = False
+"""thinkingモードを使うか。生成物の由来に記録するので、切り替えたら記録も自動で変わる。"""
+
+
+def provenance() -> dict:
+    """生成物に焼き付ける「何で作ったか」。
+
+    モデルの同一性（名前・revision・量子化・バックエンド・thinkingの有無）と、推論スタックの
+    版をここでまとめて返す。**呼び出し時点の実測値**であり、別の日に書いた記録の写しではない。
+    生成のたびにこれを記録しないと、ライブラリが更新されても生成物は何も知らないままになる。
+    """
+    import platform
+
+    import transformers
+
+    import gptqmodel
+
+    gpu = {}
+    if torch.cuda.is_available():
+        gpu = {
+            "name": torch.cuda.get_device_name(0),
+            "compute_capability": list(torch.cuda.get_device_capability()),
+        }
+
+    return {
+        "model": {
+            "id": MODEL_ID,
+            "revision": REVISION,
+            "quantization": QUANTIZATION,
+            "backend": str(BACKEND_NAME),
+            "thinking_mode": "enabled" if ENABLE_THINKING else "disabled",
+        },
+        "libraries": {
+            "python": platform.python_version(),
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+            "gptqmodel": gptqmodel.__version__,
+        },
+        "gpu": gpu,
+    }
 
 
 def load() -> tuple[object, object]:
     """モデルとトークナイザを読み込む（実測：約2.2秒、VRAM約2.50GiB）。
 
-    GPUやcompute capabilityの検査はしない。疎通確認で一度通した環境
-    （`data/teacher/manifest.json`に記録がある）であることを前提にする。
-    読み込みや生成が落ちるようになったら、まずその記録と`nvidia-smi`を突き合わせること。
+    GPUやcompute capabilityの検査はしない。疎通確認で一度通した環境であることを前提にする
+    （`scripts/teacher/README.md`の手順）。読み込みや生成が落ちるようになったら、直近の
+    `data/teacher/phrases_runs.jsonl`の`libraries`・`gpu`と`nvidia-smi`を突き合わせること。
     """
     model = GPTQModel.load(
         MODEL_ID,
@@ -62,12 +122,13 @@ def build_prompt(tokenizer, user: str, system: str | None = None) -> str:
         messages,
         tokenize=False,
         add_generation_prompt=True,
-        enable_thinking=False,
+        enable_thinking=ENABLE_THINKING,
     )
-    assert "<think>\n\n</think>" in text, (
-        "空の<think>ブロックがテンプレートに入っていない。"
-        "enable_thinking=False が効いていない可能性がある。"
-    )
+    if not ENABLE_THINKING:
+        assert "<think>\n\n</think>" in text, (
+            "空の<think>ブロックがテンプレートに入っていない。"
+            "enable_thinking=False が効いていない可能性がある。"
+        )
     return text
 
 
