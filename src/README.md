@@ -33,9 +33,13 @@ Boku-nano-handson/
 │   │   ├── README.md               behavior_probes.py の関数一覧
 │   │   └── behavior_probes.py      固定入力集合の生成・偽の衝突つぶし
 │   │
-│   └── expand/
-│       ├── README.md               binding.py の関数一覧
-│       └── binding.py              バインディング（k の具体化）の列挙
+│   ├── expand/
+│   │   ├── README.md               binding.py の関数一覧
+│   │   └── binding.py              バインディング（k の具体化）の列挙
+│   │
+│   └── nlg/
+│       ├── README.md               conjugate.py の関数一覧
+│       └── conjugate.py            終止形→連用形の活用変換（文の組み立て用）
 │
 ├── scripts/                        実行の入口
 │   ├── README.md                   本ディレクトリの説明
@@ -122,6 +126,11 @@ op評価とprobe setはどちらも呼び出し側から渡す（依存性注入
 `k`を参照するopを持つ意味ASTを、パラメータ版（`k`のまま）とリテラル版（`k`を具体値に固定）
 のどちらかで実体化するための列挙。混在は型（`Binding = int | None`）として表現できないように
 してあり、opに焼き付いた定数（`double`の`2`など）はそもそも対象にならない。
+
+**`src/nlg/conjugate.py`**
+`phrases/ja_phrases_v1.yaml`の言い回し（全て終止形）を連用形に変換する`to_renyou()`。
+複数opの言い回しを連用形連結（C方式）で1文にまとめる組み立て機のための活用変換で、
+語尾の変換規則`RULES`は長い語尾（`える`など）から順に試す。知らない語尾は`ValueError`。
 
 **`scripts/build_probe_set.py`**
 `behavior_probes.py`を使って固定入力集合を生成し、`probes/behavior_probe_set_{version}.jsonl`
