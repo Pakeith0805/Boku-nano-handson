@@ -23,6 +23,8 @@ seedを固定しなくても同じ内容が作れる——乱数を使うのは�
 | `teacher/phrases_runs.jsonl` | 1行1実行 | — | `build_phrases.py` |
 | `teacher/prompts.jsonl` | 1行1プロンプト | — | `build_phrases.py` |
 | `teacher/phrases_manifest.json` | — | — | `build_phrases.py` |
+| `dataset/train.jsonl` / `val.jsonl` / `test.jsonl` | — | — | `build_dataset.py` |
+| `dataset/test_combination.jsonl` / `test_paraphrase.jsonl` | 各30件 | — | `build_dataset.py` |
 
 ## asts.jsonl
 
@@ -109,6 +111,20 @@ sampling設定と種の決め方、`op_seeds.yaml`の内容ハッシュ（`seeds
 目標未達のop、そして`cross_op_duplicates`（複数のopで採用された同一表現）を持つ。最後のものは
 自動では落とさない——どちらを残すかは意味の判断なので、承認作業への申し送りとして出す。
 **実行のたびに上書きされる**ので、由来を辿るときは`phrases_runs.jsonl`のほうを見ること。
+
+## dataset/
+
+`build_dataset.py`が`asts.jsonl`・承認済み辞書（`phrases/ja_phrases_v1.yaml`）・その由来
+（`phrases/ja_phrases_v1_provenance.json`）・固定入力集合から組み立てた、最終的な訓練/検証/
+テストデータセット。処理順は`src/select/README.md`の設計と同じ（`combination`→`split`→
+`difficulty`→`balance`→`record`）。1行が`src/select/record.py`の`build_record()`が組み立てた
+1レコード（`spec_id`・`instruction_ja`・`reference_code`・`code_style`・`verification`など）。
+
+`train.jsonl`/`val.jsonl`/`test.jsonl`が本体で、`test_combination.jsonl`（組合せ汎化テスト。
+`RESERVED_PAIRS`を含むASTから隔離）・`test_paraphrase.jsonl`（言い換えテスト。testsplitのうち
+全opに保留分の言い回しがあるASTから抽出）は固定30件ずつ別ファイルにしてある（人が目で見て
+確認できる規模に留める）。境界値テストは別ファイルを作らない——`probes/behavior_probe_set_v1.jsonl`
+の境界値入力を評価スクリプトが生成済みコードに流し込むだけで足りるため。
 
 ## ここに無いもの
 

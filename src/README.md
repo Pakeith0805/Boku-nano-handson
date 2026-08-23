@@ -45,10 +45,18 @@ Boku-nano-handson/
 │   │   ├── README.md               nlgen.py の関数一覧
 │   │   └── nlgen.py                意味ASTから日本語指示文を列挙する。codegen.pyの日本語版
 │   │
-│   └── verify/
-│       ├── README.md               safety.py / sandbox.py の関数一覧
-│       ├── safety.py               生成コードの許可リスト検査（構文・シグネチャ）
-│       └── sandbox.py              検査済みコードを制限時間つきで実行する
+│   ├── verify/
+│   │   ├── README.md               safety.py / sandbox.py の関数一覧
+│   │   ├── safety.py               生成コードの許可リスト検査（構文・シグネチャ）
+│   │   └── sandbox.py              検査済みコードを制限時間つきで実行する
+│   │
+│   └── select/
+│       ├── README.md               各ファイルの関数一覧・処理順
+│       ├── combination.py          組合せ汎化テスト用に特定のop組合せを隔離する（最初に実行）
+│       ├── split.py                behavior_hashグループ単位でtrain/val/testに分割する
+│       ├── difficulty.py           difficulty 1〜3は全数、4だけ間引く
+│       ├── balance.py              コード形式・日本語テンプレートを貪欲法で均等に選ぶ
+│       └── record.py               選ばれた例1件を最終レコードのスキーマへ組み立てる
 │
 ├── scripts/                        実行の入口
 │   ├── README.md                   本ディレクトリの説明
@@ -58,6 +66,7 @@ Boku-nano-handson/
 │   ├── try_codegen.py              1件の意味ASTについて、codegen.pyの出力を1本だけ見る（試験用）
 │   ├── build_phrases.py            24opの言い回しを教師モデルに生成させる
 │   ├── review_phrases.py           候補を1件ずつ承認して日本語表現辞書を凍結する
+│   ├── build_dataset.py            src/select/を順に呼び、最終データセットを組み立てる
 │   │
 │   └── teacher/                    教師モデル関連。ここだけ teacher グループに依存する
 │       ├── README.md               環境構築の手順と、このディレクトリの関数一覧
@@ -72,9 +81,10 @@ Boku-nano-handson/
 │   └── behavior_probe_set_v1.jsonl 凍結済み固定入力集合（148件）
 │
 ├── phrases/                        人間が入れたもの。再現できないので data/ には置かない
-│   ├── phrase_decisions.jsonl      査読の判定（1行1件。辞書の版をまたいで積み上がる）
-│   ├── ja_phrases_v1.yaml          承認済み日本語表現辞書（op → 言い回しの一覧）
-│   └── ja_phrases_v1_manifest.json 辞書の由来（op別採用数・寄与した生成実行のrun_id）
+│   ├── phrase_decisions.jsonl          査読の判定（1行1件。辞書の版をまたいで積み上がる）
+│   ├── ja_phrases_v1.yaml              承認済み日本語表現辞書（op → 言い回しの一覧）
+│   ├── ja_phrases_v1_manifest.json     辞書の由来（op別採用数・寄与した生成実行のrun_id）
+│   └── ja_phrases_v1_provenance.json   言い回しID別の生成由来（run_id・prompt_sha256）
 │
 └── data/                           スクリプトが書いたものだけ
     ├── README.md                   生成物の一覧と再現方法
@@ -83,11 +93,18 @@ Boku-nano-handson/
     ├── bindings.jsonl              ASTごとのバインディング一覧
     ├── bindings_manifest.json      バインディング生成の要約（版・パラメータ/リテラル内訳）
     │
-    └── teacher/
-        ├── phrases_raw.jsonl       生成された言い回しの候補（棄却分も理由つきで残す）
-        ├── phrases_runs.jsonl      生成1回ぶんの由来（モデル・ライブラリ版・sampling設定）
-        ├── prompts.jsonl           実際に投げたプロンプトの全文（ハッシュごとに1行）
-        └── phrases_manifest.json   候補全体の要約（op別採用数・棄却理由の内訳）
+    ├── teacher/
+    │   ├── phrases_raw.jsonl       生成された言い回しの候補（棄却分も理由つきで残す）
+    │   ├── phrases_runs.jsonl      生成1回ぶんの由来（モデル・ライブラリ版・sampling設定）
+    │   ├── prompts.jsonl           実際に投げたプロンプトの全文（ハッシュごとに1行）
+    │   └── phrases_manifest.json   候補全体の要約（op別採用数・棄却理由の内訳）
+    │
+    └── dataset/                    build_dataset.py が書く最終データセット
+        ├── train.jsonl              訓練split
+        ├── val.jsonl                検証split
+        ├── test.jsonl               テストsplit
+        ├── test_combination.jsonl   組合せ汎化テスト（隔離した予約ペアAST由来、固定30件）
+        └── test_paraphrase.jsonl    言い換えテスト（保留分の言い回しだけで作る、固定30件）
 ```
 
 `phrases/`は、まだ査読を1件も通していなければ存在しない。
@@ -164,6 +181,43 @@ op評価とprobe setはどちらも呼び出し側から渡す（依存性注入
 `safety.check()`を呼び直す（呼び出し元が検査を怠っても最後の砦になる）。`__builtins__`も
 最小限に絞り、`signal.setitimer`で制限時間（既定1秒）を超えたら`ExecutionTimeout`にする。
 
+**`src/select/combination.py`**
+組合せ汎化テスト用に、`RESERVED_PAIRS`（`{even,desc}`・`{add_k,take_first}`・`{gt,reverse}`の
+3組）を両方揃って含むASTを`carve_out_combinations()`で隔離する`src/select/`の最初の処理。
+単体のopは訓練に残す。267,744件中16,962件（6.34%）が隔離され、`split.py`はこれを除いた
+残りだけを対象に分割する。
+
+**`src/select/split.py`**
+意味ASTのレコードを`behavior_hash`のグループ単位でtrain/val/testに分割する`split_corpus()`。
+`codegen`が連続filterの条件式を並べ替えるため、別の意味ASTが生成コードの文字列として
+一致し得る（`[even,ge]`と`[ge,even]`など）——この2つは`behavior_hash`が一致しているので、
+グループを丸ごと同じsplitに入れることでリークを防ぐ。`always_empty`なレコード（22.3%が
+1つの巨大グループに集約される）だけは例外的にグループ制約を外し、個別に無作為分割する。
+267,744件で検証済み（比率80.0/10.0/10.0%、リーク0件）。
+
+**`src/select/difficulty.py`**
+`select_difficulty_thinned()`。`difficulty`1〜3は全数、`difficulty=4`（全体の95%以上）だけ
+無作為に間引いて目標AST数に近づける。均等化はしない——`difficulty=1`(24種類)に他を揃えると
+上限を撤廃してもコーパスが目標トークン数に対して2桁以上小さくなるため。演算子の出現頻度は
+元々ほぼ均等なので、間引きだけで頻度の均等も保たれる（実測比率1.28倍→1.276倍）。
+
+**`src/select/balance.py`**
+`select_examples()`。コード形式（内包表記/ループ等の構造6軸）と日本語テンプレート（言い回し
+ID）を、コーパス全体を通した採用数`Counter`を見ながら貪欲法で選ぶ。`codegen`/`nlgen`の
+`enumerate_candidates`が返す全候補から、AST 1件ごとに一番採用数が少ない軸の値を優先して
+選び、コードと文をそれぞれ`cap`件まで選んでから対にする。300ASTの実データで検証済み
+（4,783例、sandbox経由で0エラー）。
+
+**`src/select/record.py`**
+選ばれた訓練例（`balance.Example`）を最終レコードのスキーマへ組み立てる`build_record()`。
+`code_style`は実際に持っている7軸（内包表記/ループ・一時変数・reverse方式・return形式・
+注釈・条件式の順序・変数名）をそのまま構造化し、`prompt_hashes`は`phrases/`の由来対応表
+（`ja_phrases_v1_provenance.json`）から引く（1レコードの指示文は複数opの言い回しを組み合わせる
+ため複数になりうる）。`verification`は仮の値を置かず、`safety.check()`と`sandbox.execute()`を
+その場で走らせて`syntax_ok`/`ast_safe`/`tests_passed`を判定する。`tests`は常に空リスト
+（hidden testは評価フェーズで別途生成するものであり、訓練レコードに先に埋め込むと後で使い回した
+ときにもう「隠し」ではなくなるため）。
+
 **`scripts/build_probe_set.py`**
 `behavior_probes.py`を使って固定入力集合を生成し、`probes/behavior_probe_set_{version}.jsonl`
 に凍結する駆動スクリプト。
@@ -191,10 +245,22 @@ Hydra（`conf/binding.yaml`）経由で読む。
 「何が良い言い回しだったか」を永遠に知らない）。
 
 **`scripts/review_phrases.py`**
-候補を1件ずつキー入力で承認・却下し、`phrases/ja_phrases_v1.yaml`を書き出す対話スクリプト。
-**意味の検査を行う唯一の場所**であり、`phrase_filters`が通したことは形式が整っていることしか
-意味しない。判定は`phrases/phrase_decisions.jsonl`に随時書くので中断・再開できる。
-出力を`data/`でなく`phrases/`に置くのは、人間の判断が入っていて再生成できないためである。
+候補を1件ずつキー入力で承認・却下し、`phrases/ja_phrases_v1.yaml`と、言い回しIDごとの生成由来
+をまとめた`phrases/ja_phrases_v1_provenance.json`を書き出す対話スクリプト。**意味の検査を行う
+唯一の場所**であり、`phrase_filters`が通したことは形式が整っていることしか意味しない。判定は
+`phrases/phrase_decisions.jsonl`に随時書くので中断・再開できる。出力を`data/`でなく`phrases/`
+に置くのは、人間の判断が入っていて再生成できないためである。
+
+**`scripts/build_dataset.py`**
+`src/select/`の5ファイルをこの順（`combination`→`split`→`difficulty`→`balance`→`record`）で
+呼び出し、意味ASTコーパスから最終的な訓練/検証/テストデータセット（`data/dataset/*.jsonl`）を
+組み立てる駆動スクリプト。実行前に`build_probe_set.py`・`build_ast_corpus.py`・
+`review_phrases.py --compile`が済んでいる必要がある。train/val/testに加えて、組合せ汎化テスト
+（隔離した予約ペアAST由来）・言い換えテスト（保留分の言い回しだけで作る）を固定30件ずつ別ファイル
+に書き出す（人が目で見て確認できる規模に留める）。境界値テストは別ファイルを作らない——
+`probes/behavior_probe_set_v1.jsonl`の境界値入力を評価スクリプトが生成済みコードに流し込むだけで
+足りるため。均しの`Counter`（`code_counts`・`phrase_counts`）はtrain/val/test・特殊テスト間で
+混ぜず、split単位で完結させる。`--limit-asts`で動作確認用に規模を絞れる。
 
 **`scripts/teacher/qwen.py`**
 教師モデルに実際に触る唯一のファイル。revision固定・`BACKEND.AWQ_GEMM_TRITON`・非thinkingモード
@@ -236,6 +302,14 @@ JSONL）と、パラメータ版／リテラル版の内訳を含む要約。
 プロンプトの全文は`prompts.jsonl`に残す（ハッシュは同一性しか保証しないため）。各候補の
 `run_id`と`prompt_sha256`がこの2つへの引き当てキーになる。
 
+**`data/dataset/`**
+`build_dataset.py`の出力一式。`train.jsonl`/`val.jsonl`/`test.jsonl`が本体で、
+`test_combination.jsonl`（組合せ汎化テスト）・`test_paraphrase.jsonl`（言い換えテスト）は
+それぞれ固定30件の小規模な集合として別ファイルに分けてある。各行は`src/select/record.py`の
+`build_record()`が組み立てた最終レコード（`spec_id`・`instruction_ja`・`reference_code`・
+`verification`など）。境界値テストは別ファイルを作らない——`probes/behavior_probe_set_v1.jsonl`
+に境界値入力が既に含まれているため。
+
 **`phrases/phrase_decisions.jsonl`**
 `review_phrases.py`が書く査読の判定。1行1件で、`source`（画面に出た候補）・`phrase`（実際に
 採用した形。`e`で編集すると違う値になる）・`decision`・`origin`を持つ。`origin`には候補を生んだ
@@ -250,3 +324,10 @@ JSONL）と、パラメータ版／リテラル版の内訳を含む要約。
 **人間が承認した資産**なので、流し直しても同じものは再現されない。`data/`ではなくここに
 置くのはそのためで、`probes/behavior_probe_set_v1.jsonl`と同じ「版つきで凍結された資産」に
 あたる。書き出す前にop間の重複と`phrase_filters`の規則を検査し、破れていれば書かずに止まる。
+
+**`phrases/ja_phrases_v1_provenance.json`**
+`review_phrases.py`が辞書と同時に書く、言い回しID（`ge-05`など）ごとの生成由来
+（`run_id`・`prompt_sha256`・`decided_at`）。`ja_phrases_v1.yaml`のIDは承認日時順の連番であり、
+`phrase_decisions.jsonl`はこのIDを持たない（`phrase`本文をキーにしている）ため、1レコードの
+指示文が複数opの言い回しを組み合わせて作られても、`src/select/record.py`の`build_record()`が
+`example.phrase_ids`からこのファイルを引いて`prompt_hashes`を復元できるようにしている。

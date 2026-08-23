@@ -6,7 +6,8 @@
 
 `data/teacher/phrases_raw.jsonl`（機械が形式だけ検査した候補）を読み、キー入力で1件ずつ
 採用・却下していく。判定は`phrases/phrase_decisions.jsonl`に随時書き出すので、
-`q`でいつ中断しても続きから再開できる。最後に`phrases/ja_phrases_v1.yaml`を書く。
+`q`でいつ中断しても続きから再開できる。最後に`phrases/ja_phrases_v1.yaml`と、言い回しIDごとの
+生成由来をまとめた`phrases/ja_phrases_v1_provenance.json`を書く。
 
 **ここが「意味の検査」を行う唯一の場所である。** `phrase_filters`が通したことは形式が
 整っていることしか意味しない。実際、機械が通した候補には`abs`に対する「負の値を除去する」
@@ -48,6 +49,14 @@ DECISIONS = ROOT / "phrases" / "phrase_decisions.jsonl"
 DICT_VERSION = "v1"
 DICT_OUT = ROOT / "phrases" / f"ja_phrases_{DICT_VERSION}.yaml"
 MANIFEST_OUT = ROOT / "phrases" / f"ja_phrases_{DICT_VERSION}_manifest.json"
+PROVENANCE_OUT = ROOT / "phrases" / f"ja_phrases_{DICT_VERSION}_provenance.json"
+"""言い回しID（`ge-05`など）ごとの生成由来（`run_id`・`prompt_sha256`）。
+
+`ja_phrases_{version}.yaml`のIDは承認日時順の連番であり、`phrase_decisions.jsonl`には
+このID自体を持たない（`phrase`本文をキーにしている）。1レコードの指示文が複数opの言い回しを
+組み合わせて作られる以上、どの言い回しがどのプロンプト由来かをレコード側から引けるように
+しておく必要があり、`compile_dictionary`が辞書と同時にこの対応表を書き出す。
+"""
 
 TARGET = 10
 """1opあたり集めたい採用数の下限。`build_phrases.py`と同じ値。"""
@@ -299,6 +308,21 @@ def compile_dictionary(decisions: list[dict], seeds: dict) -> None:
         encoding="utf-8",
     )
 
+    provenance = {
+        f"{op}-{i:02d}": {
+            "run_id": d["origin"].get("run_id"),
+            "prompt_sha256": d["origin"].get("prompt_sha256"),
+            "decided_at": d["decided_at"],
+        }
+        for op in OP_NAMES
+        if approved.get(op)
+        for i, d in enumerate(approved[op], start=1)
+    }
+    PROVENANCE_OUT.write_text(
+        json.dumps(provenance, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
+        encoding="utf-8",
+    )
+
     edited = sum(1 for d in decisions if d["decision"] == "approved" and d["edited"])
     MANIFEST_OUT.write_text(
         json.dumps(
@@ -334,6 +358,7 @@ def compile_dictionary(decisions: list[dict], seeds: dict) -> None:
     )
 
     print(f"\n辞書: {DICT_OUT}（{sum(len(v) for v in body.values())} 件 / {len(body)} op）")
+    print(f"由来: {PROVENANCE_OUT}")
     print(f"要約: {MANIFEST_OUT}")
     if below:
         print(f"\n\033[33m{TARGET}件に未達のop（{len(below)}個）: {below}\033[0m")

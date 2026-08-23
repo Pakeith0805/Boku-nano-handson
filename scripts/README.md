@@ -10,10 +10,16 @@ build_probe_set  →  build_ast_corpus  →  build_bindings
 
 build_phrases  ⇄  review_phrases
 （候補を生成）    （承認して辞書にする。判定は次の生成のプロンプトに戻る）
+
+build_ast_corpus の asts.jsonl + review_phrases の辞書・provenance + build_probe_set の
+probe set  →  build_dataset （data/dataset/ を書く）
 ```
 
-上段（意味AST側）と下段（日本語表現側）は独立していて、どちらを先に流してもよい。
-下段だけが教師モデルを使うため`uv sync --group teacher`を要求する。
+上段（意味AST側）と下段（日本語表現側）は独立していて、どちらを先に流してもよい。下段だけが
+教師モデルを使うため`uv sync --group teacher`を要求する（`build_dataset`自体は教師モデルに
+触らない。承認済み辞書とその由来を読むだけ）。`build_bindings`は`build_dataset`の依存には
+入らない（`data/dataset/`は`k`をパラメータのまま持つコード/文だけを使い、`bindings.jsonl`は
+読まない）。
 
 ## build_probe_set.py
 
@@ -270,8 +276,9 @@ python -m scripts.review_phrases --compile                    # 査読はせず�
 | 名前 | 説明 |
 | --- | --- |
 | `RAW` / `SEEDS_PATH` / `DECISIONS` | 候補（`data/teacher/phrases_raw.jsonl`）・種（`scripts/teacher/op_seeds.yaml`。`meaning`を画面に出すために読む）・判定の置き場所 |
-| `DICT_VERSION` | 辞書の版（`v1`）。`DICT_OUT`・`MANIFEST_OUT`のファイル名に入る |
+| `DICT_VERSION` | 辞書の版（`v1`）。`DICT_OUT`・`MANIFEST_OUT`・`PROVENANCE_OUT`のファイル名に入る |
 | `DICT_OUT` / `MANIFEST_OUT` | `phrases/ja_phrases_v1.yaml` と `phrases/ja_phrases_v1_manifest.json` |
+| `PROVENANCE_OUT` | `phrases/ja_phrases_v1_provenance.json`。言い回しID（`ge-05`など）ごとの生成由来（`run_id`・`prompt_sha256`・`decided_at`）。1レコードの指示文は複数opの言い回しを組み合わせるため、レコード側から個々の言い回しの由来を引けるようにしている |
 | `TARGET` | 1opあたり集めたい採用数の下限（10）。`build_phrases.py`と同じ値 |
 | `SIMILAR` | 「採用済みのこれと似ている」と警告する類似度の閾値（0.72、`difflib`の比） |
 | `NON_JA_KANJI` | 日本語では使わない字体（簡体字）。含まれていたら警告するが**却下はしない**（網羅的な一覧ではないため） |
@@ -289,5 +296,60 @@ python -m scripts.review_phrases --compile                    # 査読はせず�
 | `load_decisions()` / `save_decisions(decisions)` | 判定の読み書き。保存は毎回まるごと書き直す（`u`＝取り消しを素直に実装するため） |
 | `show_header(op, meaning, approved, n_done, n_total)` | opの見出し（意味・採用数・採用済み一覧）を出す |
 | `show_candidate(phrase, approved, index, total)` | 候補1件と、類似警告・字体警告・キー一覧を出す |
-| `compile_dictionary(decisions, seeds)` | 判定から辞書を組み、検証して書き出す。op間で表現が重複していれば、または`phrase_filters.check`に反する表現があれば、**書かずに止めて人に返す** |
+| `compile_dictionary(decisions, seeds)` | 判定から辞書と由来対応表（`PROVENANCE_OUT`）を組み、検証して書き出す。op間で表現が重複していれば、または`phrase_filters.check`に反する表現があれば、**書かずに止めて人に返す** |
 | `main()` | 判定を読み、opごとに候補を並べて1件ずつ捌き、最後に`compile_dictionary`を呼ぶ |
+
+## build_dataset.py
+
+意味ASTコーパスから、最終的な訓練/検証/テストデータセット（`data/dataset/`）を組み立てる。
+処理順は`src/select/README.md`の設計と同じ（`combination`→`split`→`difficulty`→`balance`→
+`record`）。事前に`build_probe_set.py`・`build_ast_corpus.py`・`review_phrases.py --compile`を
+実行しておく必要がある。
+
+```
+python -m scripts.build_dataset
+python -m scripts.build_dataset --limit-asts 200   # 動作確認用に規模を絞る
+```
+
+train/val/testに加えて、組合せ汎化テスト（`combination.carve_out_combinations`が隔離した予約
+ペアASTから抽出）・言い換えテスト（`nlgen.split_phrase_pool`が分けた保留分の言い回しだけを使う）
+を固定30件ずつ別ファイルに書き出す（人が目で見て確認できる規模に留める）。境界値テストは別
+ファイルを作らない——`probes/behavior_probe_set_v1.jsonl`に境界値入力が既に含まれており、評価
+スクリプトが生成済みコードにそれを流し込むだけで足りるため。
+
+### 出力先
+
+| ファイル | 中身 |
+| --- | --- |
+| `data/dataset/train.jsonl` / `val.jsonl` / `test.jsonl` | `split_corpus`の3分割それぞれに`difficulty`間引き・均しを適用した本体 |
+| `data/dataset/test_combination.jsonl` | 組合せ汎化テスト。隔離したASTから固定30件、1AST=1例（`cap=1`）で作る |
+| `data/dataset/test_paraphrase.jsonl` | 言い換えテスト。testsplitのうち全opに保留分の言い回しがあるASTから固定30件、保留分の辞書だけを使って作る |
+
+### 定数
+
+| 名前 | 説明 |
+| --- | --- |
+| `ROOT` / `ASTS_IN` / `PHRASES_IN` / `PROVENANCE_IN` / `OUT_DIR` | リポジトリルートと、`data/asts.jsonl`・`phrases/ja_phrases_v1.yaml`・`phrases/ja_phrases_v1_provenance.json`・出力先`data/dataset/` |
+| `TEACHER_MODEL` / `TEACHER_REVISION` | 辞書の生成に使った教師モデルの同一性。`data/teacher/phrases_runs.jsonl`の全run共通の値なので定数として持つ（`review_phrases.py --compile`実行時に確認済み） |
+| `CAP` | 1つの意味ASTにつき採用する例数の上限（20）。課題文の「最大20例」と同じ |
+| `TARGET_TOTAL_ASTS` | train+val+testで目標とする意味ASTの総数（65,000。課題文の目安の中央値） |
+| `SPLIT_RATIOS` | `split_corpus`と同じ既定分割比率（`{"train": 0.8, "val": 0.1, "test": 0.1}`） |
+| `SPECIAL_TEST_SIZE` | 組合せ汎化テスト・言い換えテストそれぞれの件数（30） |
+| `SEED` | 乱数の種の既定値 |
+
+### 関数
+
+| 関数 | 説明 |
+| --- | --- |
+| `_build_examples_for_ast(ast_id, ast_record, phrases, *, cap, code_counts, phrase_counts, rng)` | 1つのASTについて`codegen`/`nlgen`の`enumerate_candidates`で候補を作り、`select_examples`に渡して`Example`列を得る内部ヘルパー |
+| `_records_for_asts(ast_ids, by_id, phrases, probes, provenance, *, cap, rng, start_number)` | `ast_ids`ぶんの最終レコードを作る。均しの`Counter`（`code_counts`/`phrase_counts`）はこの呼び出しの中だけで完結させる（train/val/test間や特殊テスト間で採用数を混ぜない）。`(レコード列, 次に使う通番)`を返す |
+| `_write(path, records)` | `write_records`を呼ぶだけの内部ヘルパー |
+| `main()` | 引数を読み、`carve_out_combinations`で組合せ汎化テスト用ASTを隔離し、残りを`split_corpus`で分割、split毎に`select_difficulty_thinned`で間引いて`_records_for_asts`でレコード化して書き出す。続けて隔離分から組合せ汎化テスト、testsplitの対象から言い換えテストを作って書き出し、最後に合計レコード数を報告する |
+
+### 主なオプション
+
+| オプション | 説明 |
+| --- | --- |
+| `--limit-asts` | 動作確認用。train/val/testそれぞれで使うAST数の上限を絞る（既定は絞らない） |
+| `--target-total` | `TARGET_TOTAL_ASTS`を上書きする |
+| `--seed` | `SEED`を上書きする |
