@@ -232,26 +232,33 @@ def compile_dictionary(decisions: list[dict], seeds: dict) -> None:
     機械にしか見つけられない（`{k}`を消してしまった、他のopと同じ表現になった、など）。
     """
     literal = str(seeds["literal_probe"])
-    approved: dict[str, list[str]] = defaultdict(list)
+    approved: dict[str, list[dict]] = defaultdict(list)
     for d in decisions:
         if d["decision"] == "approved":
-            approved[d["op"]].append(d["phrase"])
+            approved[d["op"]].append(d)
+
+    # 承認日時順に並べる。集計・ログ用の番号（例: abs-01）をこの順で振るため。
+    # 新しい承認は常にどのopの列でも末尾に付くので、再コンパイルしても既存の番号はズレない
+    # （アルファベット順だと、途中に入る新規承認でそれより後ろの番号が全部ズレてしまう）。
+    for op in approved:
+        approved[op].sort(key=lambda d: d["decided_at"])
 
     problems: list[str] = []
 
     owner: dict[str, list[str]] = defaultdict(list)
-    for op, phrases in approved.items():
-        for p in phrases:
-            owner[p].append(op)
+    for op, ds in approved.items():
+        for d in ds:
+            owner[d["phrase"]].append(op)
     for phrase, ops in sorted(owner.items()):
         if len(ops) > 1:
             # 同じ表現が2つのopにあると、その文からopを一意に決められない。
             # 意味の判断なのでどちらを残すかは機械には決められず、止めて人に返すしかない。
             problems.append(f"op間で重複: {phrase!r} が {sorted(ops)} の両方にある")
 
-    for op, phrases in approved.items():
+    for op, ds in approved.items():
         spec = OP_REGISTRY[op]
-        for p in phrases:
+        for d in ds:
+            p = d["phrase"]
             concrete = p.replace("{k}", literal)
             reason = phrase_filters.check(
                 concrete,
@@ -272,10 +279,16 @@ def compile_dictionary(decisions: list[dict], seeds: dict) -> None:
         print(f"\n判定は {DECISIONS} に残っている。")
         raise SystemExit(1)
 
-    body = {op: sorted(approved[op]) for op in OP_NAMES if approved.get(op)}
+    body = {
+        op: {f"{op}-{i:02d}": d["phrase"] for i, d in enumerate(approved[op], start=1)}
+        for op in OP_NAMES
+        if approved.get(op)
+    }
     header = (
         f"# 承認済み日本語表現辞書 {DICT_VERSION}\n"
         f"# 引き当てキーは OP_REGISTRY の ja_key。`{{k}}` は k 参照opのスロット。\n"
+        f"# 各言い回しのキー（例: abs-01）は承認日時順の連番。新しい承認は必ず末尾に付くので、\n"
+        f"# 再コンパイルしても既存の番号はズレない。集計・ログにはこの番号を使うこと。\n"
         f"# 生成物ではなく人間が承認した資産である。`scripts/review_phrases.py` で作るが、\n"
         f"# 中身を決めているのは判定した人間であり、流し直しても同じものは再現されない。\n"
         f"# registry_version: {REGISTRY_VERSION}\n\n"

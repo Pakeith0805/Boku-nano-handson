@@ -21,6 +21,10 @@ Boku-nano-handson/
 │   │   ├── README.md               interp.py の関数一覧
 │   │   └── interp.py               参照インタプリタ。24opの意味の唯一の権威
 │   │
+│   ├── codegen/
+│   │   ├── README.md               codegen.py の関数一覧・バリエーション軸・均し方の設計
+│   │   └── codegen.py              意味ASTから等価な複数のPython実装を生成する。interp.pyとは独立
+│   │
 │   ├── semantics/
 │   │   ├── README.md               このディレクトリの関数一覧
 │   │   ├── registry.py             24opのメタデータ。意味は持たない
@@ -38,14 +42,15 @@ Boku-nano-handson/
 │   │   └── binding.py              バインディング（k の具体化）の列挙
 │   │
 │   └── nlg/
-│       ├── README.md               conjugate.py の関数一覧
-│       └── conjugate.py            終止形→連用形の活用変換（文の組み立て用）
+│       ├── README.md               nlgen.py の関数一覧
+│       └── nlgen.py                意味ASTから日本語指示文を列挙する。codegen.pyの日本語版
 │
 ├── scripts/                        実行の入口
 │   ├── README.md                   本ディレクトリの説明
 │   ├── build_probe_set.py          固定入力集合を作って凍結する
 │   ├── build_ast_corpus.py         意味ASTコーパス（参照台帳）を構築する
 │   ├── build_bindings.py           ASTごとのバインディングを列挙する（Hydra駆動）
+│   ├── try_codegen.py              1件の意味ASTについて、codegen.pyの出力を1本だけ見る（試験用）
 │   ├── build_phrases.py            24opの言い回しを教師モデルに生成させる
 │   ├── review_phrases.py           候補を1件ずつ承認して日本語表現辞書を凍結する
 │   │
@@ -98,6 +103,13 @@ Boku-nano-handson/
 24種類のopの実際の計算と、意味ASTを左から順に適用する`run(ast, xs, k)`。「各opが何を計算するか」
 の唯一の権威であり、`behavior_hash`もここでの出力を基準にする。
 
+**`src/codegen/codegen.py`**
+意味ASTから、互いに等価な複数のPython実装を生成する`generate(ast, style)`と、あるASTから
+作れる構造的に異なるコード候補を全部列挙する`enumerate_candidates(ast)`。`interp.py`とは
+opの計算を意図的に別々に書く（差分テストが意味を持つように）。内包表記/ループ・一時変数・
+reverse方式・return形式・注釈・条件式の順序という6つの構造の軸を持ち、変数名は含めない
+（抽出スクリプト側でコーパス全体を均しながら選び、仕上げに差し込む想定）。
+
 **`src/semantics/registry.py`**
 24opのメタデータ（カテゴリ・`k`を使うか・リテラル値域）を持つ辞書`OP_REGISTRY`。opの意味その
 ものは持たない（意味は`interp.py`の担当）。
@@ -127,10 +139,13 @@ op評価とprobe setはどちらも呼び出し側から渡す（依存性注入
 のどちらかで実体化するための列挙。混在は型（`Binding = int | None`）として表現できないように
 してあり、opに焼き付いた定数（`double`の`2`など）はそもそも対象にならない。
 
-**`src/nlg/conjugate.py`**
-`phrases/ja_phrases_v1.yaml`の言い回し（全て終止形）を連用形に変換する`to_renyou()`。
-複数opの言い回しを連用形連結（C方式）で1文にまとめる組み立て機のための活用変換で、
-語尾の変換規則`RULES`は長い語尾（`える`など）から順に試す。知らない語尾は`ValueError`。
+**`src/nlg/nlgen.py`**
+意味ASTから、承認済み日本語表現辞書（`phrases/ja_phrases_v1.yaml`）を使って指示文を組み立てる
+`enumerate_candidates(ast, phrases)`。`codegen.py`の日本語版で、opごとに複数ある承認済み
+言い回しの直積を全部列挙する（間引きはしない）。複数opは連用形連結（C方式）で1文にまとめ、
+そのための活用変換`to_renyou()`（語尾の変換規則`RULES`を長い語尾から順に試す。知らない語尾は
+`ValueError`）も持つ。辞書自体は読み込まず、呼び出し側が渡す（依存性注入。`yaml`は`src/`から
+使えないため）。
 
 **`scripts/build_probe_set.py`**
 `behavior_probes.py`を使って固定入力集合を生成し、`probes/behavior_probe_set_{version}.jsonl`
@@ -144,6 +159,11 @@ op評価とprobe setはどちらも呼び出し側から渡す（依存性注入
 `data/asts.jsonl`の各レコードに対して`enumerate_bindings`でバインディングを列挙し、
 `data/bindings.jsonl`と`data/bindings_manifest.json`を書き出す駆動スクリプト。設定は
 Hydra（`conf/binding.yaml`）経由で読む。
+
+**`scripts/try_codegen.py`**
+`data/asts.jsonl`から`--ast-id`で1件引く（または`--ops`でop名を直接指定する）か`--seed`で
+スタイルを選び、`codegen.generate()`の出力を1本だけ標準出力に印字する試験用スクリプト。
+`data/asts.jsonl`全267,744件への一括生成はまだ行わない。
 
 **`scripts/build_phrases.py`**
 `scripts/teacher/op_seeds.yaml`の種から24opぶんのプロンプトを組み、教師モデル（Qwen3-4B-AWQ）に
