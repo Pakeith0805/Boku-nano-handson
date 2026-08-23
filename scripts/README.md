@@ -309,7 +309,15 @@ python -m scripts.review_phrases --compile                    # 査読はせず�
 ```
 python -m scripts.build_dataset
 python -m scripts.build_dataset --limit-asts 200   # 動作確認用に規模を絞る
+python -m scripts.build_dataset --workers 1        # 逐次実行（デバッグ用）
 ```
+
+1レコードあたりの支配的なコストは`record.build_record`内の`sandbox.execute`（固定入力148件
+ぶんの実行）で、AST間に依存が無いため`multiprocessing.Pool`で並列化している（既定のワーカー数は
+CPUの論理コア数）。均しの`Counter`（`code_counts`/`phrase_counts`）はワーカーごとに独立に持つ
+（プロセスをまたいだ共有はしない）。ASTの列を`--workers`個のチャンクにラウンドロビンで分ける
+ことで、各ワーカーが扱う難易度が混ざるようにし、チャンク単位の均しの偏りを抑えている
+（32論理コアで実測: 20,852件を約21秒）。
 
 train/val/testに加えて、組合せ汎化テスト（`combination.carve_out_combinations`が隔離した予約
 ペアASTから抽出）・言い換えテスト（`nlgen.split_phrase_pool`が分けた保留分の言い回しだけを使う）
@@ -336,20 +344,26 @@ train/val/testに加えて、組合せ汎化テスト（`combination.carve_out_c
 | `SPLIT_RATIOS` | `split_corpus`と同じ既定分割比率（`{"train": 0.8, "val": 0.1, "test": 0.1}`） |
 | `SPECIAL_TEST_SIZE` | 組合せ汎化テスト・言い換えテストそれぞれの件数（30） |
 | `SEED` | 乱数の種の既定値 |
+| `_WORKER` | ワーカープロセスごとの状態（言い回し辞書・由来・probe set）を持つモジュール内グローバル。`_init_worker`が1ワーカーにつき1回だけ埋める |
 
 ### 関数
 
 | 関数 | 説明 |
 | --- | --- |
+| `_init_worker(phrases_path, provenance_path, probe_path)` | `Pool`の`initializer`。1ワーカーにつき1回だけ言い回し辞書・由来・probe setを読み、`_WORKER`に入れる（チャンクごとの再読込を避ける） |
 | `_build_examples_for_ast(ast_id, ast_record, phrases, *, cap, code_counts, phrase_counts, rng)` | 1つのASTについて`codegen`/`nlgen`の`enumerate_candidates`で候補を作り、`select_examples`に渡して`Example`列を得る内部ヘルパー |
-| `_records_for_asts(ast_ids, by_id, phrases, probes, provenance, *, cap, rng, start_number)` | `ast_ids`ぶんの最終レコードを作る。均しの`Counter`（`code_counts`/`phrase_counts`）はこの呼び出しの中だけで完結させる（train/val/test間や特殊テスト間で採用数を混ぜない）。`(レコード列, 次に使う通番)`を返す |
+| `_process_chunk(chunk)` | 1ワーカーが1チャンクぶんのASTレコードを処理する（`Pool.map`から呼ばれる）。`code_counts`/`phrase_counts`はこのチャンクの中だけで完結する。`spec_id`はまだ仮の値（0）のまま返す |
+| `_round_robin_chunks(items, n)` | `items`を`n`個のチャンクにラウンドロビンで分ける内部ヘルパー |
+| `_run_parallel(ast_ids, by_id, phrase_pool_name, *, cap, seed, pool, workers)` | `ast_ids`を`_round_robin_chunks`でチャンク分けし、`pool.map(_process_chunk, ...)`で並列処理してレコード列を1つに合成する |
+| `_renumber(records, start)` | `records`の`spec_id`を`start+1`から通し番号で振り直す（並列処理後、メインプロセス側でまとめて行う）。次に使う通番を返す |
 | `_write(path, records)` | `write_records`を呼ぶだけの内部ヘルパー |
-| `main()` | 引数を読み、`carve_out_combinations`で組合せ汎化テスト用ASTを隔離し、残りを`split_corpus`で分割、split毎に`select_difficulty_thinned`で間引いて`_records_for_asts`でレコード化して書き出す。続けて隔離分から組合せ汎化テスト、testsplitの対象から言い換えテストを作って書き出し、最後に合計レコード数を報告する |
+| `main()` | 引数を読み、`carve_out_combinations`で組合せ汎化テスト用ASTを隔離し、残りを`split_corpus`で分割。`Pool`を1つ立ち上げ、split毎に`select_difficulty_thinned`で間引いて`_run_parallel`でレコード化・`_renumber`で通番を振って書き出す。続けて隔離分から組合せ汎化テスト、testsplitの対象から言い換えテストを作って書き出し、最後に合計レコード数を報告する |
 
 ### 主なオプション
 
 | オプション | 説明 |
 | --- | --- |
 | `--limit-asts` | 動作確認用。train/val/testそれぞれで使うAST数の上限を絞る（既定は絞らない） |
+| `--workers` | 並列ワーカー数（既定はCPUの論理コア数）。`1`を指定すると実質逐次実行になる |
 | `--target-total` | `TARGET_TOTAL_ASTS`を上書きする |
 | `--seed` | `SEED`を上書きする |
