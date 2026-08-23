@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import uuid
 from collections import Counter, defaultdict
@@ -34,6 +33,7 @@ from pathlib import Path
 import yaml
 
 from scripts.teacher import phrase_filters
+from src.semantics.fingerprint import sha256
 from src.semantics.registry import OP_NAMES, OP_REGISTRY, REGISTRY_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,10 +64,6 @@ PROMPTS_OUT = ROOT / "data" / "teacher" / "prompts.jsonl"
 「何を投げたら何が出たか」は結局分からないので、全文をここに残す。ハッシュで重複を除くため、
 同じプロンプトを何度投げても1行しか増えない。
 """
-
-# hash生成関数
-def sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 # プロンプトをprompt.jsonにためていくスクリプト。entryが記録したいデータ、seenが既に記録されているデータのhash値の集合
 def record_prompt(entry: dict, seen: set[str]) -> bool:

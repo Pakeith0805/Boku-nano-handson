@@ -29,8 +29,13 @@ Evaluate = Callable[[Sequence[str], tuple[int, ...], int], Sequence[int]]
 """op列を `(xs, k)` に適用して出力列を返す関数の型。実装は呼び出し側が持つ。"""
 
 
-def _sha256(text: str) -> str:
-    """UTF-8でエンコードした文字列のSHA-256（16進64桁）。"""
+def sha256(text: str) -> str:
+    """UTF-8でエンコードした文字列のSHA-256（16進64桁）。
+
+    このファイルの主目的（op列の指紋）とは無関係な、汎用の文字列ハッシュである。
+    `scripts/build_phrases.py`の`prompt_sha256`/`seeds_sha256`もこれを使う——
+    重複する実装をここと向こうの2箇所に持たないため。
+    """
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -41,7 +46,7 @@ def canonical_json(ops: Sequence[str]) -> str:
 
 def semantic_hash(ops: Sequence[str]) -> str:
     """op列の正準JSONのハッシュ。順序が違えば別の値になる。"""
-    return _sha256(canonical_json(ops))
+    return sha256(canonical_json(ops))
 
 
 def behavior_outputs(
@@ -60,7 +65,7 @@ def behavior_hash_of(outputs: Sequence[Sequence[int]]) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    return _sha256(payload)
+    return sha256(payload)
 
 
 def behavior_hash(

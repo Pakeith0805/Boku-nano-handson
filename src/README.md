@@ -41,9 +41,14 @@ Boku-nano-handson/
 │   │   ├── README.md               binding.py の関数一覧
 │   │   └── binding.py              バインディング（k の具体化）の列挙
 │   │
-│   └── nlg/
-│       ├── README.md               nlgen.py の関数一覧
-│       └── nlgen.py                意味ASTから日本語指示文を列挙する。codegen.pyの日本語版
+│   ├── nlg/
+│   │   ├── README.md               nlgen.py の関数一覧
+│   │   └── nlgen.py                意味ASTから日本語指示文を列挙する。codegen.pyの日本語版
+│   │
+│   └── verify/
+│       ├── README.md               safety.py / sandbox.py の関数一覧
+│       ├── safety.py               生成コードの許可リスト検査（構文・シグネチャ）
+│       └── sandbox.py              検査済みコードを制限時間つきで実行する
 │
 ├── scripts/                        実行の入口
 │   ├── README.md                   本ディレクトリの説明
@@ -146,6 +151,18 @@ op評価とprobe setはどちらも呼び出し側から渡す（依存性注入
 そのための活用変換`to_renyou()`（語尾の変換規則`RULES`を長い語尾から順に試す。知らない語尾は
 `ValueError`）も持つ。辞書自体は読み込まず、呼び出し側が渡す（依存性注入。`yaml`は`src/`から
 使えないため）。
+
+**`src/verify/safety.py`**
+生成コードが許可リストの範囲内かを検査する`check(code)`。禁止リスト方式ではなく許可リスト
+方式（危険な構文を全部列挙するのは不可能なため）。許可する構文・関数・属性の集合は、
+`codegen.enumerate_candidates`の実際の出力を`ast.walk`して実地に洗い出した。指定シグネチャ
+（`def solve(xs, k):`）を守っているかもここで見る。対象は自分たちのcodegenの出力だけでなく、
+将来ここを通す学生モデル生成コードも含む。
+
+**`src/verify/sandbox.py`**
+検査済みコードを制限時間つきで実行する`execute(code, xs, k)`。`exec()`する前に必ず
+`safety.check()`を呼び直す（呼び出し元が検査を怠っても最後の砦になる）。`__builtins__`も
+最小限に絞り、`signal.setitimer`で制限時間（既定1秒）を超えたら`ExecutionTimeout`にする。
 
 **`scripts/build_probe_set.py`**
 `behavior_probes.py`を使って固定入力集合を生成し、`probes/behavior_probe_set_{version}.jsonl`
