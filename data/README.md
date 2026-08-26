@@ -23,7 +23,9 @@ seedを固定しなくても同じ内容が作れる——乱数を使うのは�
 | `teacher/phrases_runs.jsonl` | 1行1実行 | — | `build_phrases.py` |
 | `teacher/prompts.jsonl` | 1行1プロンプト | — | `build_phrases.py` |
 | `teacher/phrases_manifest.json` | — | — | `build_phrases.py` |
-| `dataset/train.jsonl` / `val.jsonl` / `test.jsonl` | — | — | `build_dataset.py` |
+| `dataset/train.jsonl` | 820,763 | 約1.12GiB | `build_dataset.py` |
+| `dataset/val.jsonl` | 95,164 | 約132MiB | `build_dataset.py` |
+| `dataset/test.jsonl` | 94,720 | 約131MiB | `build_dataset.py` |
 | `dataset/test_combination.jsonl` / `test_paraphrase.jsonl` | 各30件 | — | `build_dataset.py` |
 
 ## asts.jsonl
@@ -125,6 +127,9 @@ sampling設定と種の決め方、`op_seeds.yaml`の内容ハッシュ（`seeds
 全opに保留分の言い回しがあるASTから抽出）は固定30件ずつ別ファイルにしてある（人が目で見て
 確認できる規模に留める）。境界値テストは別ファイルを作らない——`probes/behavior_probe_set_v1.jsonl`
 の境界値入力を評価スクリプトが生成済みコードに流し込むだけで足りるため。
+
+データセットとしての説明（スキーマ全体・生成手順の要約・既知の限界など、Dataset Card）は
+`data/dataset/README.md`にある。本ファイルの説明はファイル一覧としての最小限に留める。
 
 ## ここに無いもの
 

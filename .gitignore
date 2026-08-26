@@ -4,3 +4,5 @@
 data/asts.jsonl
 
 __pycache__/
+
+data/dataset/*.jsonl
