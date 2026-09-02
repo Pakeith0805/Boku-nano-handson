@@ -35,6 +35,9 @@ OUT = ROOT / "data" / "tokenizer" / "tokenizer.json"
 VOCAB_SIZE = 8_192
 """課題文の推奨語彙数。"""
 
+MAX_TOKEN_LENGTH = 16
+"""1トークンの最大バイト長。これを小さくすることで、1トークンの大きさが小さくなる"""
+
 SPECIAL_TOKENS: list[str] = [
     "<|pad|>",
     "<|bos|>",
@@ -65,6 +68,7 @@ def main() -> None:
         vocab_size=VOCAB_SIZE,
         special_tokens=SPECIAL_TOKENS,
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
+        max_token_length=MAX_TOKEN_LENGTH,
         show_progress=True,
     )
     tokenizer.train_from_iterator(iter_texts(TRAIN_IN), trainer=trainer)
