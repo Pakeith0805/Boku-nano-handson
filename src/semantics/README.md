@@ -2,7 +2,7 @@
 
 意味ASTのデータ構造・opメタデータ・指紋計算・レコード組み立て。opの**意味**（実際の計算）は
 持たない——それは`src/interp/`の役目。ここにあるのはopの**メタデータ**と、それを使った
-構造的な導出・集計だけ。
+構造的な導出・集計が中心。`corpus.py` はレコード構築のため参照インタプリタを呼びます。
 
 ## registry.py
 
@@ -57,6 +57,7 @@
 | `canonical_json()` | `semantic_hash`の入力になる正準表現（op列だけのJSON） |
 | `to_dict()` | レコード形式のうち、op列から決まる部分を辞書で返す |
 | `from_dict(data)` | `to_dict()`の逆。`semantic_ast`だけを読み、派生値は再計算して食い違いを検出する（classmethod） |
+| `__post_init__()` | `ops` をタプルへ正規化する。操作数・重複・未知opはここでは検証しない |
 | `__str__()` | `[ge, double, asc]`の形の文字列表現 |
 
 ### 関数
@@ -85,7 +86,7 @@ probe setの作り方も知らない。
 | --- | --- |
 | `sha256(text)` | UTF-8でエンコードした文字列のSHA-256（16進64桁）。両ハッシュの土台であり、`scripts/build_phrases.py`の`prompt_sha256`/`seeds_sha256`もこれを使う汎用ヘルパー |
 | `canonical_json(ops)` | op列だけの正準表現（定数・由来情報は含めない） |
-| `semantic_hash(ops)` | op列の正準JSONのハッシュ。順序が違えば別の値になる |
+| `semantic_hash(ops)` | op列の正準JSONのハッシュ。操作の順序も入力に含める |
 | `behavior_outputs(ops, probes, evaluate)` | 固定入力集合に対する出力列 |
 | `behavior_hash_of(outputs)` | 出力列からハッシュを作る |
 | `behavior_hash(ops, probes, evaluate)` | 固定入力集合に対する出力列のハッシュ |
@@ -97,7 +98,7 @@ probe setの作り方も知らない。
 ## corpus.py
 
 `asts.jsonl`と`manifest.json`の読み書き。レコードは「op列から決まる値」（`SemanticAST`）＋
-「評価しないと決まらない値」（`Fingerprint`）＋「コーパスに載せて決まる値」（この層）の合成。
+「構造と実行結果の指紋」（`Fingerprint`）＋「コーパスに載せて決まる値」（この層）の合成。
 
 ### 型・定数
 
@@ -118,10 +119,30 @@ probe setの作り方も知らない。
 | `build_records(asts, probes, meta)` | 全レコードと、出力値の絶対値の最大桁数を返す。1つのASTにつき評価は一度だけにする |
 | `write_records(path, records)` | JSONLで書き出す（1行1レコード） |
 | `read_records(path)` | JSONLを読み戻す |
-| `build_manifest(records, probe_count, max_output_digits, meta)` | 1回の生成の要約（difficulty別件数、op出現頻度、behavior_hash衝突統計など）を作る |
+| `build_manifest(records, *, probe_count, max_output_digits, meta)` | 1回の生成の要約（difficulty別件数、op出現頻度、behavior_hash衝突統計など）を作る |
 | `write_manifest(path, manifest)` | `manifest.json`を書き出す（整形して人が読める形にする） |
 | `read_manifest(path)` | `manifest.json`を読む |
 
 ## schema.json
 
 `asts.jsonl`の1行（1レコード）のJSON Schema。必須フィールドと型を定義する。関数は持たない。
+
+## dataclassのフィールドとメソッド
+
+| クラス | フィールド（保存する値） |
+| --- | --- |
+| `OpSpec` | `name`, `category`, `uses_k`, `literal_domain`, `ja_key`, `shadows=()`, `notes=""` |
+| `BindingSlot` | `index`（0始まり）, `op`, `literal_domain` |
+| `SemanticAST` | `ops`。構築時にタプルへ正規化するが、長さ・重複・未知opはここで一括検証しない |
+| `Fingerprint` | `semantic_hash`, `behavior_hash`, `always_empty`, `is_identity` |
+| `RecordMeta` | `created_at`（必須）, `generator_version`, `registry_version`, `probe_set_version`, `schema_version` |
+
+| メソッド | 説明 |
+| --- | --- |
+| `BindingSlot.to_dict()` | スロット情報を辞書へ変換し、値域をリストにする |
+| `Fingerprint.to_dict()` | 指紋の4フィールドを辞書で返す |
+| `RecordMeta.to_dict()` | 由来と版を辞書で返す。`source="rule"` も追加する |
+
+`semantic_hash` は操作列だけから計算し、評価器は不要です。`behavior_hash` と退化フラグは有限のprobe set上の結果であり、全入力での等価性や恒等性を証明しません。通常のデータ分割に使うのは `behavior_hash` です。
+
+`schema.json` には現在のレコードが出力しない任意フィールド `uniform_literal_domain` も残っています。実際の計算は `src/expand/binding.py` が担当し、このずれは `tests/test_record_schema.py` で既知の差として検査しています。

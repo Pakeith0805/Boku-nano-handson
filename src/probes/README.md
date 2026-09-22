@@ -46,5 +46,9 @@
 | `multiple_of` と `even` | `k != 2` |
 | `ge` と `positive` | `k != 1` |
 | `lt` と `negative` | `k == 1` かつ `xs` に `0` を含む |
-| `take_first` と `take_last` | `len(xs) > k` と `len(xs) < k` の両方 |
+| `take_first` と `take_last` | `len(xs) > k` で先頭・末尾の値が異なる入力。`len(xs) < k` は両者とも全要素を返す境界確認 |
 | `asc` と `desc` と `reverse` | 未整列で相異なる要素を含む |
+
+`build_probe_set()` が保証する識別は単一op24個までです。駆動する `scripts/build_probe_set.py` はさらに難易度1〜4の全ASTと外部入力200件で反例探索を行います。「偽の衝突なし」はこの検査集合内での結果であり、全入力に対する等価性の証明ではありません。
+
+`external_inputs()` は元のprobe setを除外しますが、返す外部入力同士の重複は除去しません。`load_probe_set()` は順序を保って `(tuple(xs), k)` を読むだけで、版や入力値域を検証しません。

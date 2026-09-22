@@ -50,22 +50,22 @@ op列でも引数は常に2つ取る（課題の関数シグネチャが固定�
 | 条件式の順序変更 | （`Style`ではなくop列そのもの。後述） | 連続filterの区間のみ |
 | `reverse=True` / 逆順操作 | `reverse_style` | order stageのうち`desc`と`reverse`だけ（`asc`には効かない。該当opが無いASTでは完全に無効） |
 | 1行`return` / 複数行形式 | `one_line_return` | `temp_vars=False`かつ`comprehension=True`（1本の式に完全融合できたとき）だけ |
-| コメント・型注釈の有無 | `annotate` | シグネチャ全体＋全stage |
+| コメント・型注釈の有無 | `annotate` | 型注釈はシグネチャ。日本語コメントは段階ごとに文を出す経路のみ（融合した式には付かない） |
 
 ## 条件式の順序変更の仕組み
 
 「隣接する2つ以上のfilterは、同じ要素を独立に判定するだけなので順序を入れ替えても結果が
 変わらない」という性質を使い、`_op_orderings`が**op列というタプルそのものを並べ替えて**
 別の（挙動は同じ）`SemanticAST`を作り、それを普通の`generate()`にそのまま渡している。
-`generate()`側に「シャッフルモード」のような特別扱いは無く、渡された`variant`を他の意味ASTと
-区別せずに処理するだけである。
+列挙時は `Style.shuffle_filters=False` のまま、並べ替え済みの `variant` を渡します。
+単発の `generate()` には別途 `Style.shuffle_filters` によるシャッフル経路があり、`seed` で再現できます。
 
 対象になるのは次の条件を両方満たす区間だけ。
 
 - **filterカテゴリのopであること**（map/order/sliceは対象外。可換ではないため）
 - **連続していること**（間にmap/order/sliceが1つでも挟まると、そこで区間が切れる）
 
-例えば`even, add_k, ge`は両方filterだが`add_k`で分断されているため並べ替えの対象外
+例えば`even, add_k, ge`の`even`と`ge`はfilterだが`add_k`で分断されているため並べ替えの対象外
 （`ge`の判定基準が「元の値」か「kを足した後の値」かで意味が変わってしまう）。
 `MAX_OPS=4`のもとでは、長さ2以上の区間が同時に2つ存在することはない（区切りに他カテゴリの
 opが最低1個要るので、2区間なら最低2+1+2=5opsが要る）ので、区間は多くとも1つ、最大でも
@@ -74,23 +74,32 @@ opが最低1個要るので、2区間なら最低2+1+2=5opsが要る）ので、
 `[even, ge]`と`[ge, even]`のように、この並べ替えで**別の意味AST（別の`ast_id`）と同一の
 生成コード文字列になり得る**。これは意図的に許容している——この2つは`behavior_hash`も
 一致する（挙動が完全に同じ）ため、訓練/検証/テスト分割を`behavior_hash`のグループ単位で
-行う設計のもとでは、同じグループは常に同じsplitに入るので、別split間でこの文字列が衝突する
-ことはない。
+行う設計のもとでは、通常ASTのグループは同じsplitに入ります。ただし `always_empty` は個別分割の例外で、
+組合せテストとの横断的な挙動分離も行わないため、全出力間の重複排除を保証するものではありません。
 
-## 均し方の設計（抽出スクリプト向け）
+## 候補の選抜と変数名
 
-`enumerate_candidates`はASTから作れる候補を全部返すだけで、**何件・どれを実際に採用するかは
-一切決めない**。それは`scripts/`側の抽出スクリプトの責務であり、次の2段構えを想定している。
+`enumerate_candidates` は、変数名を既定値に固定して候補を列挙し、コード文字列が
+同じものを除いて返します。採用する件数と候補を決めるのは
+[src/select/balance.py](../select/balance.py) です。
 
-1. **構造の軸（6つ）をコーパス全体で均す** — `comprehension`・`temp_vars`・`reverse_style`・
-   `one_line_return`・`annotate`・条件式の順序（`Candidate.ops`が元の`ast.ops`と同じか、
-   どう並び替わっているか）を、コーパス全体を跨いだ`Counter`で今の採用数を見ながら、
-   一番不足している軸の値を持つ候補を優先して選ぶ貪欲法を想定している。
-   `Candidate.style`だけを見ても条件式の順序は分からない点に注意（`Candidate.ops`を見る）。
-2. **変数名（2つ）は均さず、選ばれた候補にラウンドロビンで仕上げる** — `elem_name`・
-   `stage_var`/`accum_var`は表層的な違いでしかないので、コーパス全体で均等にする価値が薄い。
-   ①で選ばれた`Candidate`に対して、`Candidate.style`をコピーして好きな名前を差し込み、
-   `generate(SemanticAST(candidate.ops), 名前入りstyle)`を呼び直せば済む。
+1. 内包表記、一時変数、逆順方式、return形式、注釈、filter並べ替え有無の
+   **6フラグをまとめたタプル**を集計キーにします。各フラグのTrue/Falseを個別に
+   均等化する方式ではありません。候補をシャッフルしてから採用数の少ない順に一度ソートし、
+   最大件数までまとめて選びます。
+2. 選んだ候補の `Style` をコピーし、`elem_name`・`stage_var`・`accum_var` を
+   それぞれ候補プールから乱数で選び、`generate` でコードを書き直します。
 
-`enumerate_candidates`が変数名を含めずに列挙しているのは、この2段構えを前提にしている
-ためである（変数名まで総当たりすると件数が膨らみ、①の集計が数えにくくなる）。
+`build_dataset.py` はチャンクごとに別のカウンタを使います。全ワーカーを通じた
+厳密な均等化ではなく、候補の偏りを抑えるための処理です。
+変数名を全列挙から外しておくことで、構造を選ぶ段階での候補数を抑えています。
+
+## dataclassのプロパティ
+
+| クラス | フィールド |
+| --- | --- |
+| `Stage` | `kind`（レンダリング単位）, `ops`（まとめた操作列） |
+| `Style` | `comprehension=True`, `temp_vars=True`, `shuffle_filters=False`, `reverse_style=False`, `one_line_return=True`, `annotate=True`, `elem_name="x"`, `stage_var="s"`, `accum_var="result"`, `seed=None` |
+| `Candidate` | `style`, `ops`, `code` |
+
+これらは不変dataclassで、独自メソッドはありません。`_MAP_EXPR` / `_FILTER_COND` は独立した演算式・条件式の生成辞書、`_MAP_COMMENT` / `_FILTER_COMMENT` / `_ORDER_COMMENT` / `_SLICE_COMMENT` はコメント用の内部定数です。

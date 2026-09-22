@@ -239,6 +239,9 @@ teacher = [
     { name = "torchvision" },
     { name = "transformers" },
 ]
+train = [
+    { name = "torch" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -258,6 +261,7 @@ teacher = [
     { name = "torchvision" },
     { name = "transformers", specifier = ">=4.51" },
 ]
+train = [{ name = "torch", specifier = ">=2.9" }]
 
 [[package]]
 name = "cachetools"

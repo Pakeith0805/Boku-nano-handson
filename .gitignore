@@ -6,3 +6,15 @@ data/asts.jsonl
 __pycache__/
 
 data/dataset/*.jsonl
+
+# 訓練の出力(checkpoint・mlflowのローカルトラッキング)。大容量かつ再現の主張対象ではない。
+/runs
+
+# 説明文
+/docs
+
+# エージェント
+/.agents
+
+# run
+/mlruns

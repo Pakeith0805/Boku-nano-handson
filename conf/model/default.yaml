@@ -1,0 +1,11 @@
+# model/transformer.py の ModelConfig と同じ既定値。
+vocab_size: 4096
+max_seq_len: 256
+d_model: 384
+n_layers: 8
+n_heads: 8
+n_kv_heads: 2
+head_dim: 48
+d_ff: 1024
+rope_theta: 10000.0
+rms_norm_eps: 1.0e-5

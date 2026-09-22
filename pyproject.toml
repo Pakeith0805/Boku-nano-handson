@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 # 依存の層は実装計画 §11 を参照。
 #   boku/semantics, boku/interp, boku/probes  … 標準ライブラリのみ
 #   scripts/                                  … ＋ hydra-core, mlflow, tokenizers
+#   model/                                    … ＋ torch（train グループ）
 #   tests/                                    … ＋ pytest
 # 意味の権威（参照インタプリタ・レジストリ）に外部ライブラリを持ち込まない。
 # 境界は tests/test_core_has_no_external_deps.py で固定する。
@@ -17,6 +18,12 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8"]
+
+# 本体モデル（model/）の訓練スタック。`uv sync --group train` で入れる。
+# teacher グループと違い、量子化推論（gptqmodel/torchvision）は要らない。
+train = [
+    "torch>=2.9",  # RTX 5090 = compute capability 12.0 (sm_120) を含むビルドが要る
+]
 
 # 教師モデル（Qwen/Qwen3-4B-AWQ）の推論スタック（document_EXPAND.md §2.7、RUNBOOK 16a）。
 #

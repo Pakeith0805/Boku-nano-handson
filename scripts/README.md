@@ -1,369 +1,255 @@
-# scripts/
+# scripts/ — 生成・訓練・評価の入口
 
-実際に実行するスクリプト群。`python -m scripts.<ファイル名>`の形で実行する。
+リポジトリのルートで `python -m scripts.<名前>` と実行します。以下の例は仮想環境のPythonを使う想定です。`uv run python -m ...` でも実行できますが、訓練には `uv run --group train python -m ...` のように必要なグループを指定します。
 
-依存の順序は次のとおり。左のスクリプトの出力が右の入力になる。
+## 準備と処理順
 
-```
-build_probe_set  →  build_ast_corpus  →  build_bindings
-                    （probe set を読む）  （asts.jsonl を読む）
-
-build_phrases  ⇄  review_phrases
-（候補を生成）    （承認して辞書にする。判定は次の生成のプロンプトに戻る）
-
-build_ast_corpus の asts.jsonl + review_phrases の辞書・provenance + build_probe_set の
-probe set  →  build_dataset （data/dataset/ を書く）
+```bash
+uv sync --group dev
+source .venv/bin/activate
 ```
 
-上段（意味AST側）と下段（日本語表現側）は独立していて、どちらを先に流してもよい。下段だけが
-教師モデルを使うため`uv sync --group teacher`を要求する（`build_dataset`自体は教師モデルに
-触らない。承認済み辞書とその由来を読むだけ）。`build_bindings`は`build_dataset`の依存には
-入らない（`data/dataset/`は`k`をパラメータのまま持つコード/文だけを使い、`bindings.jsonl`は
-読まない）。
+モデル訓練・評価を行う環境は `uv sync --group train`、教師モデルを呼ぶ環境は `uv sync --group teacher` で準備します。両方必要なら両グループを指定します。教師モデルの設定は [teacher/README.md](teacher/README.md) を参照してください。
+
+```text
+build_probe_set → build_ast_corpus ──────────────────────────────┐
+                       └→ build_bindings（独立した候補台帳）     │
+build_phrases ⇄ review_phrases → 承認済み辞書・由来対応表 ───────┤
+build_probe_set → 固定入力集合 ─────────────────────────────────┘
+                          ↓
+                     build_dataset
+                          ↓
+                     build_tokenizer → visualize_tokenizer
+                          ↓
+                        train → evaluate / try_generate
+```
+
+既存の `phrases/ja_phrases_v1.yaml` と由来対応表を使う場合、教師モデルによる再生成・査読は不要です。`build_dataset` は `bindings.jsonl` を読まず、`k` を引数のまま持つコードと指示文を作ります。
 
 ## build_probe_set.py
 
-固定入力集合（probe set）を生成して`probes/behavior_probe_set_{version}.jsonl`に凍結する。
+`main()` は境界値＋乱数の集合を作り、全ASTの挙動を比較して反例を追加し、`probes/behavior_probe_set_v1.jsonl` へ保存します。既存と同じ入力列なら書き換えず、異なれば `--force` なしでは停止します。
 
-```
+| 定数 | 値・役割 |
+| --- | --- |
+| `VERSION` / `SEED` | `v1` / 0 |
+| `RANDOM_COUNT` / `MAX_PROBES` | 最初の乱数入力50件 / 全入力の上限256件 |
+| `EXTERNAL_COUNT` / `VERIFY_MAX_DIFFICULTY` | 外部入力200件 / 難易度4までの全267,744 AST |
+| `ROOT` / `OUT` | リポジトリルート / 凍結入力の出力先 |
+
+```bash
 python -m scripts.build_probe_set
-python -m scripts.build_probe_set --force   # 既存の凍結ファイルを上書きする
+python -m scripts.build_probe_set --force
 ```
 
-### 定数
-
-| 名前 | 説明 |
-| --- | --- |
-| `VERSION` | 生成する固定入力集合の版（`src.probes.behavior_probes.PROBE_SET_VERSION`を参照） |
-| `SEED` | 乱数の種 |
-| `RANDOM_COUNT` | 境界値に加えて最初に足す乱数の件数 |
-| `MAX_PROBES` | 入力集合の上限 |
-| `EXTERNAL_COUNT` | 偽の衝突検証に使う外部入力の件数 |
-| `VERIFY_MAX_DIFFICULTY` | 偽の衝突を潰す検証をどのdifficultyまで行うか（4＝全数267,744件対象） |
-| `ROOT` / `OUT` | リポジトリルートと凍結ファイルの出力先 |
-
-### 関数
-
-| 関数 | 説明 |
-| --- | --- |
-| `main()` | ①`build_probe_set`で境界値＋乱数の入力集合を作る、②`enumerate_all_asts`から対象difficultyのop列を取り、`grow_until_no_false_collisions`で偽の衝突が0件になるまで育てる、③結果を報告し、既存の凍結ファイルと違えば`--force`なしでは書き換えずに止める |
+偽の衝突が0件という結果は、使用した外部入力200件上での検査結果です。凍結入力を変更すると挙動ハッシュも変わるため、依存するAST台帳・データセットとの整合を取り直す必要があります。
 
 ## build_ast_corpus.py
 
-意味ASTのコーパス（`data/asts.jsonl`）とその要約（`data/manifest.json`）を生成する。
-参照台帳として267,744件（difficulty 1〜4の全数）を作るので、層化配分やseedによる抽出は
-行わない。実行前に`build_probe_set.py`で固定入力集合を凍結しておく必要がある。
+`main()` は凍結入力を読み、1〜4操作の全ASTを列挙して指紋・統計を計算します。`OUT=data/asts.jsonl` と `MANIFEST_OUT=data/manifest.json` を上書きします。入力のprobe setがなければ停止します。
 
-```
+```bash
 python -m scripts.build_ast_corpus
 ```
 
-### 定数
-
-| 名前 | 説明 |
-| --- | --- |
-| `ROOT` | リポジトリルート |
-| `OUT` | `asts.jsonl`の出力先（`data/asts.jsonl`） |
-| `MANIFEST_OUT` | `manifest.json`の出力先（`data/manifest.json`） |
-
-### 関数
-
-| 関数 | 説明 |
-| --- | --- |
-| `main()` | 凍結済みの固定入力集合を読み込み、`enumerate_all_asts()`で全ASTを列挙し、`build_records`でレコード化、`build_manifest`で要約を作り、両方をファイルに書き出して結果を報告する |
+列挙と指紋は同じ実装・固定入力で再現できますが、生成時刻 `created_at` は実行ごとに変わります。
 
 ## build_bindings.py
 
-意味ASTごとに`src.expand.binding.enumerate_bindings`でバインディング（`k`の具体化）を列挙し、
-`data/bindings.jsonl`とその要約`data/bindings_manifest.json`を生成する。実行前に
-`build_ast_corpus.py`で`data/asts.jsonl`を作っておく必要がある。設定はHydra
-（`conf/binding.yaml`）で読み込むため、他の駆動スクリプトと違い`hydra.main`デコレータ経由で
-起動する。
+`main(cfg)` はAST台帳を読み、各ASTのパラメータ版 `null` と、必要なら全 `k` スロットへ同じ整数を入れるリテラル版を列挙します。Hydra設定は [conf/binding.yaml](../conf/binding.yaml) です。
 
-```
-python -m scripts.build_bindings
-python -m scripts.build_bindings binding.include_literal=false   # パラメータ版だけにする
-```
-
-### 関数
-
-| 関数 | 説明 |
+| 設定 | 既定値 |
 | --- | --- |
-| `main(cfg)` | `cfg.asts_in`（既定`data/asts.jsonl`）を読み、レコードごとに`enumerate_bindings`でバインディングを列挙して`cfg.out`（既定`data/bindings.jsonl`）にJSONLで書き出す。パラメータ版／リテラル版の内訳を`cfg.manifest_out`（既定`data/bindings_manifest.json`）にまとめ、結果を標準出力に報告する |
+| `asts_in` | `data/asts.jsonl` |
+| `out` / `manifest_out` | `data/bindings.jsonl` / `data/bindings_manifest.json` |
+| `binding.include_literal` | `true`。`false` でもパラメータ版は必ず残る |
+
+```bash
+python -m scripts.build_bindings
+python -m scripts.build_bindings binding.include_literal=false
+```
+
+候補台帳を作る処理であり、ここではコードを生成しません。
+
+## try_codegen.py
+
+`main()` は `--ops` または `--ast-id` からASTを決め、`random_style(seed)` で選んだスタイルのコードを1本表示します。学習済みモデルは使いません。`ASTS_PATH=data/asts.jsonl` は `--ast-id` の場合だけ必要です。
+
+```bash
+python -m scripts.try_codegen --ops asc,take_first
+python -m scripts.try_codegen --ast-id ast-000577 --seed 7
+```
 
 ## build_phrases.py
 
-24opそれぞれの日本語の言い回しを教師モデル（Qwen3-4B-AWQ）に生成させ、機械的に棄却したうえで
-`data/teacher/`に由来つきで書き出す。他の`build_*.py`と違って外部モデルを使うため、
-`uv sync --group teacher`が要る（`--dry-run`は不要）。
+`main()` は [teacher/op_seeds.yaml](teacher/op_seeds.yaml) と既存の査読判定を読み、opごとにプロンプトを組んで教師モデルを呼びます。形式検査を通った候補も意味が正しいとは限らないため、承認済み辞書にするには人間の査読が必要です。
 
-**出力は辞書ではなく候補である。** 日本語表現辞書は人間が承認した資産であり
-（`src/semantics/registry.py`の`ja_key`）、ここが書くのはその手前の材料に過ぎない。承認は
-`review_phrases.py`が行う。棄却された行も理由つきで全部残す（どの規則が効いたかが分かれば
-プロンプトの直し所が分かるため）。
+| 定数 | 既定値・用途 |
+| --- | --- |
+| `TARGET` | 1opの目標10件。査読履歴があれば承認数、なければ機械採用数で判定 |
+| `BASE_ROUNDS` / `MAX_ROUNDS` | 最低5ラウンド / ラウンド番号の上限3,200 |
+| `N_PER_REQUEST` / `MAX_NEW_TOKENS` | 要求8行 / 生成上限384トークン |
+| `TEMPERATURE` / `TOP_P` | 0.9 / 0.95 |
+| `SEED_BASE` | 20260806。各呼び出しは `SEED_BASE + OP_NAMES.index(op) * 100 + round` |
+| `MAX_KNOWN_IN_PROMPT` | 既出候補を最大40件掲載 |
+| `MAX_REVIEWED_IN_PROMPT` | 承認済み・却下済みをそれぞれ最大24件掲載 |
+| `SYSTEM_PROMPT_TEMPLATE` | 種の `frame` を埋める共通指示 |
 
-意味の確定は`scripts/teacher/op_seeds.yaml`（人間が書く種）が持ち、このスクリプトは
-「種からプロンプトを組み、生成し、行に割り、弾いて、由来つきで記録する」だけを行う。
-
+```bash
+python -m scripts.build_phrases --dry-run --ops even reverse
+python -m scripts.build_phrases --ops even reverse gt --max-rounds 10
+python -m scripts.build_phrases --below-target --max-rounds 20
 ```
-python -m scripts.build_phrases --dry-run              # プロンプトを表示して終わる（GPU不要）
-python -m scripts.build_phrases --ops even reverse gt  # opを絞って試す
-python -m scripts.build_phrases                        # 本番（24op×5ラウンド、40分前後）
-python -m scripts.build_phrases --below-target         # 査読の承認数が目標未満のopだけ回す
-```
 
-途中で落ちても`data/teacher/phrases_raw.jsonl`から済んだ`(op, ラウンド)`を読み戻して再開する。
+`--dry-run` はモデルをimportせずプロンプトを表示するだけです。通常実行は `phrases_raw.jsonl` に記録済みの `(op, round)` を飛ばして再開します。`--max-rounds` は「今回追加する回数」ではなく通算ラウンド番号の上限です。空のcompletionは候補行が残らないため、そのラウンドの完了を再開時に判定できません。
 
-### 査読との往復
+`--rounds`, `--max-rounds`, `--target`, `-n`, `--temperature` で既定値を上書きできます。`--quiet-prompts` は標準出力へのプロンプト表示だけを省き、ファイルへの記録は残します。査読数は起動時に読み込んだ値なので、実行中の追加承認には追従しません。seedの式はラウンド100以上で別opと同じ値になり得ます。
 
-`review_phrases.py`の判定（`phrases/phrase_decisions.jsonl`）があれば読み、承認済みの表現を
-**追加の正例**として、却下済みを**反例**としてプロンプトに載せる。機械の検査は形式しか見ないので、
-これを読まないと生成側は「何が良い言い回しだったか」を永遠に知らない（`sub_k`は機械が24件通したのに
-人間の承認は0件だった、という実例がある）。判定があるときは目標達成の判定も承認数で行う。
-
-### 出力先
-
-| 定数 | ファイル | 何が入るか |
-| --- | --- | --- |
-| `OUT` | `data/teacher/phrases_raw.jsonl` | 1行1候補。採用も棄却も理由つきで残す（追記） |
-| `RUNS_OUT` | `data/teacher/phrases_runs.jsonl` | 1行1実行の由来。**再現に要るものはすべてここ**（追記。開始時に一度書き、終了時に結果を足して差し替える） |
-| `PROMPTS_OUT` | `data/teacher/prompts.jsonl` | 実際にトークナイザへ渡したプロンプト全文（`prompt_sha256`ごとに1行） |
-| `MANIFEST_OUT` | `data/teacher/phrases_manifest.json` | `phrases_raw.jsonl`全体の統計。**実行のたびに上書きされる** |
-| `DECISIONS` | `phrases/phrase_decisions.jsonl` | 入力側。`review_phrases.py`が書く判定。無ければ無視する |
-
-`phrases_manifest.json`と`phrases_runs.jsonl`は役割が違う。前者は全体の統計で上書きされるため、
-複数回に分けて生成すると最後の実行の情報しか残らない。由来は上書きしてはいけないので後者に追記し、
-各レコードの`run_id`から引けるようにしてある。
-
-#### phrases_raw.jsonl の各行
-
-| キー | 中身 | 実例 |
-| --- | --- | --- |
-| `op` | どのopの候補か | `"abs"` |
-| `round` | 何ラウンド目の生成か | `1` |
-| `status` | `"accepted"` / `"rejected"` | `"accepted"` |
-| `reason` | 棄却理由。通ったら`null` | `null` / `"duplicate"` |
-| `phrase` | **辞書に入る形**（`{k}`版）。棄却なら`null` | `"各要素を正の数に変換する"` |
-| `normalized` | 正規化後（具体値のまま）。重複判定と再開の突き合わせに使う | `"各要素を正の数に変換する"` |
-| `raw` | モデルが出した生の1行（空白込み） | `"各要素を正の数に変換する  "` |
-| `run_id` | どの実行か。`phrases_runs.jsonl`への引き当てキー | `"20260816T102945-45b57224"` |
-| `seed` | このリクエストの乱数の種 | `20260807` |
-| `temperature` | このリクエストの温度 | `0.9` |
-| `prompt_sha256` | 投げた全文のハッシュ。`prompts.jsonl`への引き当てキー | `"0bce97d3…"` |
-| `prompt_version` | `op_seeds.yaml`の`version` | `"v2"` |
-| `registry_version` | `OP_REGISTRY`の版 | `"ops24-v1"` |
-| `created_at` | 生成時刻 | `"2026-08-16T10:29:56+09:00"` |
-
-#### prompts.jsonl の各行
-
-`prompt_sha256`ごとに1行で、同じプロンプトを何度投げても増えない。
-
-| キー | 中身 |
+| 出力 | 内容 |
 | --- | --- |
-| `prompt_sha256` | ハッシュ。レコード側と突き合わせる |
-| `run_id` / `op` / `round` | このプロンプトを**最初に**使った実行と場所 |
-| `system_prompt` | 展開後の全文 |
-| `user_prompt` | op固有の部分の全文 |
-| `templated_text` | **chat template適用後の全文**（`<\|im_start\|>system`から始まる、トークナイザに渡したそのもの） |
-| `created_at` | 記録時刻 |
+| `data/teacher/phrases_raw.jsonl` | 空でない出力行を採用・棄却の理由とともに追記 |
+| `data/teacher/phrases_runs.jsonl` | モデル・ライブラリ・GPU・sampling・引数。開始時に記録し、終了時は同じrunを更新 |
+| `data/teacher/prompts.jsonl` | chat template適用後の全文。ハッシュごとに初回だけ追記 |
+| `data/teacher/phrases_manifest.json` | 候補全体の統計を上書き |
 
-ハッシュはプロンプトの**同一性**しか保証しない。中身まで復元できなければ「何を投げたら何が出たか」は
-分からないので、全文をここに残す。生成の再現に必要なのはこのファイルであり、入力ファイルの
-ハッシュではない（だから`decisions_sha256`は持たない）。
-
-#### phrases_runs.jsonl の各行
-
-| キー | 中身 |
-| --- | --- |
-| `run_id` | 実行の識別子 |
-| `started_at` / `finished_at` | 開始・終了時刻（未完了なら`finished_at`が`null`） |
-| `model` | `id` / `revision` / `quantization` / `backend` / `thinking_mode` |
-| `libraries` | `python` / `torch` / `transformers` / `gptqmodel` |
-| `gpu` | `name` / `compute_capability` |
-| `system_prompt` | 展開後の全文 |
-| `sampling` | `do_sample` / `temperature` / `top_p` / `max_new_tokens` / `n_per_request` / `seed_base` / `seed_formula` |
-| `prompt_version` / `registry_version` | 種とレジストリの版 |
-| `seeds_sha256` | `op_seeds.yaml`の内容ハッシュ |
-| `args` | `ops` / `rounds` / `max_rounds` / `target` / `below_target` |
-| `produced` | この実行が生んだ`lines` / `accepted` |
-
-#### phrases_manifest.json
-
-| キー | 中身 |
-| --- | --- |
-| `model` | `id` / `revision` |
-| `params` | `temperature` / `top_p` / `max_new_tokens` / `n_per_request` / `seed_base` / `target` |
-| `prompt_version` / `registry_version` | 版 |
-| `totals` | `lines` / `accepted` / `rejected` |
-| `per_op` | op別の`accepted`と`rounds_run`（24件） |
-| `rejection_reasons` | 棄却理由の内訳。どの規則がどれだけ効いたかが分かる |
-| `below_target` | 目標未達のop。空なら全op到達 |
-| `cross_op_duplicates` | op間で重なった表現。**自動では落とさない**（どちらを残すかは意味の判断なので、査読への申し送りになる） |
-| `generated_at` | 作成時刻 |
-
-### 定数
-
-| 名前 | 説明 |
-| --- | --- |
-| `TARGET` | 1opあたり集めたい採用数の下限（10） |
-| `BASE_ROUNDS` / `MAX_ROUNDS` | 目標に届いていても必ず回す回数（5）と、未達opに追加で回す上限（3200）。済んだラウンドは飛ばされるので、上限を上げて流し直せば「続きのラウンド」だけが走る |
-| `N_PER_REQUEST` | 1リクエストで要求する言い換えの個数（8）。**多く求めるほど質が落ちる**（15個で試すとモデルが数合わせに捏造を始めた） |
-| `MAX_NEW_TOKENS` | 1リクエストの生成上限（384）。足りないと最後の行が途中で切れる |
-| `TEMPERATURE` / `TOP_P` | サンプリングの設定。貪欲法は使えない（毎回同じ出力になり、ラウンドを重ねる意味が消える） |
-| `SEED_BASE` | 乱数の種の基準値。実際の種は`SEED_BASE + OP_NAMES.index(op) * 100 + round`で決まり再現できる |
-| `MAX_KNOWN_IN_PROMPT` | 「これ以外を書け」としてプロンプトに載せる既出表現の上限（40） |
-| `MAX_REVIEWED_IN_PROMPT` | 査読由来の正例・反例をプロンプトに載せる上限（それぞれ24件） |
-| `SYSTEM_PROMPT_TEMPLATE` | system promptの雛形。`{frame}`を`op_seeds.yaml`の書き出しで埋める。書き出しは24op・全ラウンドで不変なのでopごとの指示とは置き場所を分ける |
-| `SEEDS_PATH` | 種（`scripts/teacher/op_seeds.yaml`）の場所 |
-
-### 関数
-
-| 関数 | 説明 |
-| --- | --- |
-| `sha256(text)` | UTF-8文字列のSHA-256（16進）。内部ヘルパー |
-| `record_prompt(entry, seen)` | プロンプト全文を`prompts.jsonl`に追記する。同じハッシュを既に書いていれば何もしない |
-| `load_prompt_hashes()` | `prompts.jsonl`に既に載っている`prompt_sha256`の集合を読む |
-| `load_seeds()` | `op_seeds.yaml`を読み、opのキー集合が`OP_REGISTRY`と一致すること・例文の`{k}`の有無が`uses_k`と一致すること・種に検査用リテラルが裸で書かれていないことを検査する。破れていれば`ValueError` |
-| `load_review()` | `phrase_decisions.jsonl`から承認済み／却下済みの表現をop別に読む。無ければ空を返す |
-| `build_user_prompt(name, seeds, known, n, good, bad)` | 1op・1ラウンド分のユーザープロンプトを組む。`known`（採用済み）を載せて「それ以外」と指示するのがラウンド間の重複を減らす一番効く手。`good`/`bad`は査読を通った表現と落とされた表現 |
-| `load_existing()` | 途中まで書かれた`phrases_raw.jsonl`を読み戻し、`(全レコード, 済んだ(op, ラウンド)の集合, op別の採用済み表現)`を返す |
-| `run_round(model, tokenizer, *, ...)` | 1op・1ラウンド分を生成し、行ごとに`phrase_filters`で正規化・棄却してレコードに割る。プロンプト全文の記録もここで行う。`(レコード列, 所要秒数)`を返す |
-| `write_run(run)` | 実行1件の由来を`phrases_runs.jsonl`に追記する（同じ`run_id`の行があれば差し替える） |
-| `write_manifest(records, seeds, temperature)` | モデル・パラメータ・op別採用数・棄却理由の内訳・目標未達のop・op間で重複した言い回しをまとめて書く |
-| `main()` | 種を検査し、査読の判定を読み、opごとにラウンドを回してJSONLに追記し、最後に要約を報告する |
-
-### 主なオプション
-
-| オプション | 説明 |
-| --- | --- |
-| `--dry-run` | プロンプトを表示して終わる。モデルを読み込まないのでGPUも teacher グループも要らない |
-| `--ops` | 対象のop（既定は24個全部） |
-| `--below-target` | 承認数が目標未満のopだけを対象にする。査読の判定が無ければエラーで止まる |
-| `--rounds` / `--max-rounds` / `--target` / `-n` / `--temperature` | 同名の定数を上書きする |
-| `--quiet-prompts` | 投げたプロンプトを標準出力に出さない（`prompts.jsonl`には必ず残る） |
+実際の `-n` や `--target` はrun記録を見る必要があります。manifestの `params.n_per_request` と `params.target` は現行実装ではCLIの上書き値ではなくモジュール定数です。各ファイルのフィールドは [data/README.md](../data/README.md) を参照してください。
 
 ## review_phrases.py
 
-`build_phrases.py`が集めた候補を1件ずつ承認し、日本語表現辞書
-`phrases/ja_phrases_v1.yaml`として凍結する。キー入力で採用・却下していく対話スクリプト。
+`main()` は候補を人間に表示し、判定を保存して、終了時に辞書・manifest・由来対応表を作ります。`--compile` は判定の読み込みと書き出しだけを行います。`termios` を使うUnix系の対話スクリプトです。
 
-**ここが「意味の検査」を行う唯一の場所である。** `phrase_filters`が通したことは形式が整っている
-ことしか意味しない（実際、機械が通した候補には`abs`に対する「負の値を除去する」＝それは`positive`、
-のような誤りが相当数混ざっている）。判定基準を見失わないよう、opごとに`op_seeds.yaml`の`meaning`を
-画面に出し続ける。
+| 定数 | 役割 |
+| --- | --- |
+| `RAW` / `SEEDS_PATH` / `DECISIONS` | 候補、種、`phrases/phrase_decisions.jsonl` のパス |
+| `DICT_VERSION` / `TARGET` | 辞書v1 / 1opあたり目標10件 |
+| `DICT_OUT` / `MANIFEST_OUT` / `PROVENANCE_OUT` | `phrases/ja_phrases_v1` の辞書・集計・由来対応表 |
+| `SIMILAR` / `NON_JA_KANJI` | 類似度0.72以上と簡体字候補を表示で注意喚起 |
+| `ORIGIN_FIELDS` | 判定側にも複製する生成由来のフィールド |
 
-辞書を`data/`でなく`phrases/`に置くのは、`data/README.md`が「全て`scripts/`配下から再現できる」と
-宣言しているのに対し、承認済み辞書は人間の判断が入っていて再現できないため。
-`probes/behavior_probe_set_v1.jsonl`と同じ「版つきで凍結された資産」の扱いにする。
-
-```
-python -m scripts.review_phrases                              # 続きから査読する
-python -m scripts.review_phrases --ops abs                    # opを絞る
-python -m scripts.review_phrases --include-rejected not_terminal_form  # 機械が落とした行も候補に戻す
-python -m scripts.review_phrases --compile                    # 査読はせず、今の判定から辞書だけ書き直す
+```bash
+python -m scripts.review_phrases
+python -m scripts.review_phrases --ops abs
+python -m scripts.review_phrases --include-rejected not_terminal_form
+python -m scripts.review_phrases --compile
 ```
 
-判定は1件ごとに`phrases/phrase_decisions.jsonl`へ書き出すので、`q`でいつ中断しても続きから
-再開できる。判定には候補を生んだ生成の由来（`run_id`など）を焼き付ける——承認済み辞書は生成物より
-長く生きる資産なので、`phrases_raw.jsonl`との突き合わせに頼らない。
+`y`=採用、`n`=却下、`e`=編集して採用、`s`=保留、`u`=直前の判定を取り消し、`q`=終了して辞書を作成。判定は随時保存します。Ctrl-C時は保存済み判定を残して終了し、辞書のコンパイルは行いません。
 
-### キー操作
-
-`y`=採用　`n`=却下　`e`=編集して採用　`s`=保留（記録せず次回また聞く）　`u`=直前の判定を取り消す　`q`=中断して保存
-
-### 定数
-
-| 名前 | 説明 |
-| --- | --- |
-| `RAW` / `SEEDS_PATH` / `DECISIONS` | 候補（`data/teacher/phrases_raw.jsonl`）・種（`scripts/teacher/op_seeds.yaml`。`meaning`を画面に出すために読む）・判定の置き場所 |
-| `DICT_VERSION` | 辞書の版（`v1`）。`DICT_OUT`・`MANIFEST_OUT`・`PROVENANCE_OUT`のファイル名に入る |
-| `DICT_OUT` / `MANIFEST_OUT` | `phrases/ja_phrases_v1.yaml` と `phrases/ja_phrases_v1_manifest.json` |
-| `PROVENANCE_OUT` | `phrases/ja_phrases_v1_provenance.json`。言い回しID（`ge-05`など）ごとの生成由来（`run_id`・`prompt_sha256`・`decided_at`）。1レコードの指示文は複数opの言い回しを組み合わせるため、レコード側から個々の言い回しの由来を引けるようにしている |
-| `TARGET` | 1opあたり集めたい採用数の下限（10）。`build_phrases.py`と同じ値 |
-| `SIMILAR` | 「採用済みのこれと似ている」と警告する類似度の閾値（0.72、`difflib`の比） |
-| `NON_JA_KANJI` | 日本語では使わない字体（簡体字）。含まれていたら警告するが**却下はしない**（網羅的な一覧ではないため） |
-| `ORIGIN_FIELDS` | 判定に焼き付ける生成の由来のフィールド名（`run_id` `round` `seed` `prompt_sha256` `prompt_version` `created_at`） |
-| `KEYS` | 画面下に出すキー操作の一覧（下の「キー操作」と同じもの） |
-
-### 関数
-
-| 関数 | 説明 |
-| --- | --- |
-| `read_key()` | 1文字だけ読む（Enter不要）。端末でないときは行単位の読み込みに落とす |
-| `edit_text(text)` | 元の文字列を入れた状態で編集させる。「惜しい」候補を捨てずに直せるようにする |
-| `load_candidates(include_rejected)` | `phrases_raw.jsonl`からop別の候補とその由来を読む。`include_rejected`に棄却理由を渡すと、その理由で落ちた行も候補に戻す |
-| `chain_order(phrases)` | 似た候補が隣り合うように並べ替える。最短のものから始め、直前に一番似ているものを繋いでいく |
-| `load_decisions()` / `save_decisions(decisions)` | 判定の読み書き。保存は毎回まるごと書き直す（`u`＝取り消しを素直に実装するため） |
-| `show_header(op, meaning, approved, n_done, n_total)` | opの見出し（意味・採用数・採用済み一覧）を出す |
-| `show_candidate(phrase, approved, index, total)` | 候補1件と、類似警告・字体警告・キー一覧を出す |
-| `compile_dictionary(decisions, seeds)` | 判定から辞書と由来対応表（`PROVENANCE_OUT`）を組み、検証して書き出す。op間で表現が重複していれば、または`phrase_filters.check`に反する表現があれば、**書かずに止めて人に返す** |
-| `main()` | 判定を読み、opごとに候補を並べて1件ずつ捌き、最後に`compile_dictionary`を呼ぶ |
+`compile_dictionary` は重複表現と形式違反があれば書き出さず停止します。目標10件未達は警告のみで、部分辞書も書き出します。IDは承認日時順の連番です。後から承認を末尾へ追加する場合は既存IDを保てますが、過去の承認を削除・変更すると採番や内容が変わり得ます。
 
 ## build_dataset.py
 
-意味ASTコーパスから、最終的な訓練/検証/テストデータセット（`data/dataset/`）を組み立てる。
-処理順は`src/select/README.md`の設計と同じ（`combination`→`split`→`difficulty`→`balance`→
-`record`）。事前に`build_probe_set.py`・`build_ast_corpus.py`・`review_phrases.py --compile`を
-実行しておく必要がある。
+`main()` はAST台帳・辞書・由来対応表・凍結入力集合を読み、[src/select/](../src/select/README.md) を呼びます。
 
-```
+| 定数 | 既定値・役割 |
+| --- | --- |
+| `ASTS_IN` / `PHRASES_IN` / `PROVENANCE_IN` | `data/asts.jsonl`、辞書v1、言い回しIDの由来対応表 |
+| `OUT_DIR` | `data/dataset` |
+| `TARGET_TOTAL_ASTS` / `CAP` | 通常3split合計の目標65,000 AST / 各AST最大20例 |
+| `SPLIT_RATIOS` / `SEED` | train/val/test = 0.8/0.1/0.1 / seed 0 |
+| `SPECIAL_TEST_SIZE` | 組合せ・言い換えテストそれぞれ上限30 AST、各1例 |
+| `TEACHER_MODEL` / `TEACHER_REVISION` | 辞書v1に対応する教師モデルと固定revision |
+| `_SPLIT_SEED_GAP` | 各split・特殊テストの乱数列を10,000ずつずらす |
+
+```bash
 python -m scripts.build_dataset
-python -m scripts.build_dataset --limit-asts 200   # 動作確認用に規模を絞る
-python -m scripts.build_dataset --workers 1        # 逐次実行（デバッグ用）
+python -m scripts.build_dataset --workers 1 --target-total 65000 --seed 0
 ```
 
-1レコードあたりの支配的なコストは`record.build_record`内の`sandbox.execute`（固定入力148件
-ぶんの実行）で、AST間に依存が無いため`multiprocessing.Pool`で並列化している（既定のワーカー数は
-CPUの論理コア数）。均しの`Counter`（`code_counts`/`phrase_counts`）はワーカーごとに独立に持つ
-（プロセスをまたいだ共有はしない）。ASTの列を`--workers`個のチャンクにラウンドロビンで分ける
-ことで、各ワーカーが扱う難易度が混ざるようにし、チャンク単位の均しの偏りを抑えている
-（32論理コアで実測: 20,852件を約21秒）。
+予約ペア隔離 → 挙動グループ分割 → 難易度4間引き → コード・文の選抜 → 検証結果記録の順です。ASTをワーカー数のチャンクへ分け、採用数の調整はチャンク内だけで行います。結果を合流後、**各出力ファイル内で** `reference_code` の文字列が同じ行を除去し、5ファイルを通した `spec_id` を付け直して保存します。
 
-train/val/testに加えて、組合せ汎化テスト（`combination.carve_out_combinations`が隔離した予約
-ペアASTから抽出）・言い換えテスト（`nlgen.split_phrase_pool`が分けた保留分の言い回しだけを使う）
-を固定30件ずつ別ファイルに書き出す（人が目で見て確認できる規模に留める）。境界値テストは別
-ファイルを作らない——`probes/behavior_probe_set_v1.jsonl`に境界値入力が既に含まれており、評価
-スクリプトが生成済みコードにそれを流し込むだけで足りるため。
+`--limit-asts 200` は通常3splitのAST数を絞りますが、出力先は通常と同じで既存JSONLを上書きします。特殊テストにはこの上限を適用しません。特殊テストは母集団不足・コード重複排除により30行未満になる場合があります。
 
-### 出力先
+同じ生成結果を得るにはseedに加えてワーカー数・コード・辞書・probe setも揃える必要があります。検証結果がfalseの行を除去する処理と、トークン長による選別は未実装です。
 
-| ファイル | 中身 |
+## build_tokenizer.py
+
+`main()` は `TRAIN_IN=data/dataset/train.jsonl` の指示文とコードだけを使い、`OUT=data/tokenizer/tokenizer.json` を上書きします。`iter_texts(path)` がJSONLから2種類の文字列を順にyieldします。
+
+| 定数 | 値・意味 |
 | --- | --- |
-| `data/dataset/train.jsonl` / `val.jsonl` / `test.jsonl` | `split_corpus`の3分割それぞれに`difficulty`間引き・均しを適用した本体 |
-| `data/dataset/test_combination.jsonl` | 組合せ汎化テスト。隔離したASTから固定30件、1AST=1例（`cap=1`）で作る |
-| `data/dataset/test_paraphrase.jsonl` | 言い換えテスト。testsplitのうち全opに保留分の言い回しがあるASTから固定30件、保留分の辞書だけを使って作る |
+| `VOCAB_SIZE` | 学習時の目標8,192。保存済み現行版の実語彙は1,256 |
+| `MAX_TOKEN_LENGTH` | 16。ByteLevel表現上のマージ長を制限。現行語彙の最長は15バイト相当 |
+| `SPECIAL_TOKENS` | `<\|pad\|>`, `<\|bos\|>`, `<\|eos\|>`, `<\|task\|>`, `<\|code\|>`, `<\|explanation\|>`。最後は現行学習では未使用 |
 
-### 定数
+```bash
+python -m scripts.build_tokenizer
+```
 
-| 名前 | 説明 |
+ByteLevelの256バイトを基底語彙に含めます。BPEの `byte_fallback` オプションを有効にする方式ではありません。モデル側の語彙行数は別設定（既定4,096）なので、トークナイザを再学習した場合は全IDがモデルの範囲に収まることを確認してください。モデル側は自動調整しません。
+
+## visualize_tokenizer.py
+
+`main()` は `TOKENIZER_IN=data/tokenizer/tokenizer.json` から語彙とマージを読み、`OUT=data/tokenizer/tokenizer_visualization.json` を上書きします。`_readable(decoder, raw)` がByteLevel表記を可読テキストへ戻します。日本語1文字の途中のバイトだけを持つトークンは、単独表示すると `�` になる場合があります。
+
+```bash
+python -m scripts.visualize_tokenizer
+```
+
+## train.py
+
+`main(cfg)` は設定と入力を読み、`BokuNanoModel` を初期化してAdamWで更新します。モデル構造は [conf/model/default.yaml](../conf/model/default.yaml)、その他は [conf/train.yaml](../conf/train.yaml) です。
+
+```bash
+python -m scripts.train
+python -m scripts.train train.target_real_tokens=100_000_000
+python -m scripts.train optim.max_lr=1e-4 eval.interval=100
+```
+
+| 設定・型 | 既定値・意味 |
 | --- | --- |
-| `ROOT` / `ASTS_IN` / `PHRASES_IN` / `PROVENANCE_IN` / `OUT_DIR` | リポジトリルートと、`data/asts.jsonl`・`phrases/ja_phrases_v1.yaml`・`phrases/ja_phrases_v1_provenance.json`・出力先`data/dataset/` |
-| `TEACHER_MODEL` / `TEACHER_REVISION` | 辞書の生成に使った教師モデルの同一性。`data/teacher/phrases_runs.jsonl`の全run共通の値なので定数として持つ（`review_phrases.py --compile`実行時に確認済み） |
-| `CAP` | 1つの意味ASTにつき採用する例数の上限（20）。課題文の「最大20例」と同じ |
-| `TARGET_TOTAL_ASTS` | train+val+testで目標とする意味ASTの総数（65,000。課題文の目安の中央値） |
-| `SPLIT_RATIOS` | `split_corpus`と同じ既定分割比率（`{"train": 0.8, "val": 0.1, "test": 0.1}`） |
-| `SPECIAL_TEST_SIZE` | 組合せ汎化テスト・言い換えテストそれぞれの件数（30） |
-| `SEED` | 乱数の種の既定値 |
-| `_WORKER` | ワーカープロセスごとの状態（言い回し辞書・由来・probe set）を持つモジュール内グローバル。`_init_worker`が1ワーカーにつき1回だけ埋める |
+| `Record` | パディング前の `(トークンID列, loss_mask列)` |
+| `train.global_batch_sequences` | 128系列を一度に処理。勾配累積なし |
+| `train.target_real_tokens` | 200,000,000。pad以外のトークン予算の目安 |
+| `optim.*` | max_lr=3e-4、betas=(0.9,0.95)、eps=1e-8、weight_decay=0.1、warmup_ratio=0.03、min_lr_ratio=0.1、grad_clip=1.0 |
+| `eval.interval` / `eval.n_batches` | 200step間隔 / 8バッチのlossを平均 |
+| `eval.generation.n_samples` / `max_new_tokens` | 固定seedで16件 / 最大192新規トークン |
+| `checkpoint.interval` | step 0を除く500step間隔と最終stepに保存 |
+| `mlflow.experiment` / `tracking_db` | `boku-nano` / `runs/mlflow.db` |
 
-### 関数
+1レコード1系列で右padし、次トークン予測を行います。モデルの順伝播をBF16 autocastで計算し、cross entropyはFP32です。パラメータはFP32で、RMSNormも含めて全パラメータに同じweight decayを設定します。
 
-| 関数 | 説明 |
+学習step数は `floor(target_real_tokens / (系列数 × 平均トークン長))` で事前に決めます。実測累計で停止する方式ではありません。長さ見積もりは上限で丸めていますが、データイテレータは長すぎるレコードを切り詰めず例外にします。
+
+損失マスクは入力位置側に合わせます。EOS予測のほか、右padのある行ではEOSから最初のpadへの予測も含む現行挙動については [model/README.md](../model/README.md) を参照してください。
+
+検証lossはイテレータを進めて得た8バッチの単純平均です。生成評価の16件は毎回同じseedで選び、構文検査と固定入力全件の出力一致で合格を数えます。`eval.generation.temperature` は設定ファイルにありますが、コードは参照せず貪欲生成に固定されています。
+
+checkpointは `runs/checkpoints/<run_id>/step_NNNNNN.pt`、metricsはSQLite、トークナイザ本体はMLflow artifactへ保存します。artifactの配置はMLflow側の設定に従います。checkpointから訓練を再開するCLIはありません。
+
+## try_generate.py
+
+`main()` はcheckpointからモデルを復元し、1件の日本語指示に対してコードを表示します。`TOKENIZER_PATH` と `VAL_PATH` はリポジトリ内の現行tokenizerと `val.jsonl` に固定されています。
+
+以下の `RUN_ID` とstep番号は、保存済みcheckpointの実際の値に置き換えます。
+
+```bash
+python -m scripts.try_generate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt --random-val --seed 3
+python -m scripts.try_generate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt \
+    --instruction '整数を要素に持つリストに対して、偶数だけを残すsolve関数を書いてください。'
+```
+
+`--instruction` と `--random-val` はどちらか1つが必須です。前者は構文検査まで、後者は固定入力全件で参照コードと比較してPASS/FAILを表示します。`--max-new-tokens` は既定192です。checkpointと同じトークナイザを使ってください。対応版の自動検査やtokenizer指定オプションはありません。
+
+## evaluate.py
+
+`main()` はモデルを読み、通常・言い換え・組合せの3集合で生成・判定し、同じ生成結果を境界値入力だけでも再評価します。`CATEGORIES` が3つのファイルパスを定義します。
+
+```bash
+python -m scripts.evaluate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt
+python -m scripts.evaluate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt --limit 500 --out report.json
+python -m scripts.evaluate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt --limit 0
+```
+
+| オプション・定数 | 既定値・動作 |
 | --- | --- |
-| `_init_worker(phrases_path, provenance_path, probe_path)` | `Pool`の`initializer`。1ワーカーにつき1回だけ言い回し辞書・由来・probe setを読み、`_WORKER`に入れる（チャンクごとの再読込を避ける） |
-| `_build_examples_for_ast(ast_id, ast_record, phrases, *, cap, code_counts, phrase_counts, rng)` | 1つのASTについて`codegen`/`nlgen`の`enumerate_candidates`で候補を作り、`select_examples`に渡して`Example`列を得る内部ヘルパー |
-| `_process_chunk(chunk)` | 1ワーカーが1チャンクぶんのASTレコードを処理する（`Pool.map`から呼ばれる）。`code_counts`/`phrase_counts`はこのチャンクの中だけで完結する。`spec_id`はまだ仮の値（0）のまま返す |
-| `_round_robin_chunks(items, n)` | `items`を`n`個のチャンクにラウンドロビンで分ける内部ヘルパー |
-| `_run_parallel(ast_ids, by_id, phrase_pool_name, *, cap, seed, pool, workers)` | `ast_ids`を`_round_robin_chunks`でチャンク分けし、`pool.map(_process_chunk, ...)`で並列処理してレコード列を1つに合成する |
-| `_renumber(records, start)` | `records`の`spec_id`を`start+1`から通し番号で振り直す（並列処理後、メインプロセス側でまとめて行う）。次に使う通番を返す |
-| `_write(path, records)` | `write_records`を呼ぶだけの内部ヘルパー |
-| `main()` | 引数を読み、`carve_out_combinations`で組合せ汎化テスト用ASTを隔離し、残りを`split_corpus`で分割。`Pool`を1つ立ち上げ、split毎に`select_difficulty_thinned`で間引いて`_run_parallel`でレコード化・`_renumber`で通番を振って書き出す。続けて隔離分から組合せ汎化テスト、testsplitの対象から言い換えテストを作って書き出し、最後に合計レコード数を報告する |
+| `DEFAULT_LIMIT` / `--limit` | 通常テスト200件。0以下、または全件数以上なら全件 |
+| `--seed` | 通常テストの抽出seed 0 |
+| `--batch-size` | 一度に生成する件数64 |
+| `--max-new-tokens` | 192。モデルの残り系列長も上限になる |
+| `--out` | 省略時は標準出力のみ。指定時は生成コードと個別合否を含むJSONを書き出す |
+| `TOKENIZER_PATH` / `PROBES_PATH` | 現行tokenizerと凍結入力v1の固定パス |
 
-### 主なオプション
+言い換え・組合せは全件を使い、通常テストだけを抽出します。生成コードは構文検査と全148入力の参照出力一致で合格です。境界値の合格率は20入力だけで判定した各例の合否を、評価した3集合の**件数で加重して**集計します。
 
-| オプション | 説明 |
-| --- | --- |
-| `--limit-asts` | 動作確認用。train/val/testそれぞれで使うAST数の上限を絞る（既定は絞らない） |
-| `--workers` | 並列ワーカー数（既定はCPUの論理コア数）。`1`を指定すると実質逐次実行になる |
-| `--target-total` | `TARGET_TOTAL_ASTS`を上書きする |
-| `--seed` | `SEED`を上書きする |
+存在しないデータファイルはスキップします。`--out` の親ディレクトリは自動作成しません。EOSを出したかどうかは合格条件に含まれません。これらの評価は新しいhidden入力の生成ではなく、データ構築にも使った凍結probe setの再利用です。

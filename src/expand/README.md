@@ -27,3 +27,5 @@ opに焼き付いた定数（`double`の`2`など）は`k`と無関係なので�
 
 `binding_slots`はどちらの関数も`SemanticAST.to_dict()`/コーパスレコードの`binding_slots`と
 同じ形（各要素が`{"index":..., "op":..., "literal_domain":[...]}`の辞書）を受け取る。
+
+現在の `codegen` / `nlg` / `build_dataset.py` はこのリテラル候補台帳を使わず、`k` を引数のまま残します。ここは具体化の選択肢を列挙する層で、リテラル版コードの生成機能ではありません。

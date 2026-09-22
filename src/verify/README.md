@@ -1,7 +1,7 @@
 # src/verify/
 
 生成された`solve(xs, k)`コードが安全かどうかの検査と、制限時間つきの実行。対象は自分たちの
-`codegen`が吐くコードだけでなく、将来ここを通す**学生モデルが生成した任意のコード**も含む
+`codegen`が吐くコードだけでなく、`scripts/train.py`・`scripts/evaluate.py` が評価する**学生モデルの生成コード**も含む
 （pass@1評価）。禁止リスト方式ではなく**許可リスト方式**を取る——危険な構文を全部列挙するのは
 原理的に不可能だが、許可した構文だけを通すのは有限で確認できる。
 
@@ -44,3 +44,9 @@
 | --- | --- |
 | `run_with_timeout(fn, args, *, seconds)` | `fn(*args)`を`seconds`秒の制限時間で実行する。`signal.setitimer`を使うためUnix系OS・メインスレッド限定 |
 | `execute(code, xs, k, *, timeout=DEFAULT_TIMEOUT_SECONDS)` | `code`を実行し`solve(xs, k)`の結果を返す。`safety.check()`に落ちれば`ValueError`、制限時間を超えれば`ExecutionTimeout` |
+
+### 実行の範囲
+
+`execute()` は呼び出し元と同じプロセスで動きます。タイマーが囲むのは `solve(list(xs), k)` の呼び出しで、構文検査・`compile`・関数を定義する `exec` はタイマーの外です。OSの隔離やメモリ上限を提供する実装ではありません。
+
+入力リストは複製しますが、返り値の型や値域を検証しているわけではありません。実行中の通常の例外も呼び出し元へ伝播します。型注釈が許可された構文でも、注釈に使う名前が実行名前空間で解決できる保証はありません。

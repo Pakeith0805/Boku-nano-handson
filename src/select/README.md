@@ -1,158 +1,140 @@
-# src/select/
+# src/select/ — 分割・候補選抜・最終レコード
 
-生成された候補（AST・コード・指示文）の中から、実際に訓練コーパスへ入れるものを選び、
-最終レコードのスキーマへ組み立てる層。`codegen`/`nlgen`が「作れるものを全部列挙する」のに
-対し、こちらは「その中から何を・どれだけ採用するか」を決め（`combination`〜`balance`）、
-選んだものを1件のレコードにする（`record`）。
+候補を作る `codegen` / `nlg` に対し、この層は「どれを採用するか」と最終形式への組み立てを担当します。駆動は [scripts/build_dataset.py](../../scripts/build_dataset.py) です。
 
-処理の順番は次の通り。`combination.py`が一番先——分割の母集団から先に抜いておかないと、
-予約したはずの組合せが偶然train側に混ざる。`scripts/build_dataset.py`がこの順で呼び出す。
-
-```
-combination.py（組合せ汎化テスト用の隔離）
-  → split.py（behavior_hash単位でtrain/val/testに分割）
-    → difficulty.py（difficulty 1〜3は全数、4だけ間引く）
-      → balance.py（コード形式・日本語テンプレートを貪欲に均す）
-        → record.py（選ばれた例1件ずつを最終レコードへ組み立て・検証）
+```text
+combination（予約ペアの隔離）
+  → split（残りをtrain/val/testへ）
+    → difficulty（各splitで難易度4を間引く）
+      → balance（コードと指示文を選ぶ）
+        → record（形式を整えて検証結果を記録）
 ```
 
 ## combination.py
 
-組合せ汎化テスト用に、特定のop組合せを訓練/検証から隔離する。
+予約した操作の組を一度も見せずに、その組合せの生成を評価するための分離です。
 
 ### 型・定数
 
 | 名前 | 説明 |
 | --- | --- |
-| `RESERVED_PAIRS` | 予約する3組（`{even,desc}`・`{add_k,take_first}`・`{gt,reverse}`）。カテゴリの組合せに変化を持たせている（抽出×並べ替えを2組、変換×切り出しを1組） |
-| `CombinationSplit` | 隔離結果を持つdataclass（`remaining`＝通常の分割に回すast_id、`reserved`＝組合せ汎化テスト専用のast_id） |
+| `RESERVED_PAIRS` | `{even, desc}`, `{add_k, take_first}`, `{gt, reverse}` の3組 |
+| `CombinationSplit` | 隔離結果を持つ不変dataclass |
+
+### CombinationSplitのプロパティ
+
+| フィールド | 説明 |
+| --- | --- |
+| `remaining` | 予約ペアを含まないASTのIDタプル |
+| `reserved` | 予約ペアを1つ以上含むASTのIDタプル |
 
 ### 関数
 
 | 関数 | 説明 |
 | --- | --- |
-| `contains_reserved_pair(ops, pairs)` | `ops`が予約ペアのいずれかを（順序を問わず）両方含むか |
-| `carve_out_combinations(records, pairs)` | 予約ペアを1つ以上含むASTを`reserved`へ、それ以外を`remaining`へ振り分ける。単体でのop（`even`単体など）は`remaining`に残る |
+| `contains_reserved_pair(ops, pairs)` | 順序を問わず、いずれかの予約ペアを両方含むか返す |
+| `carve_out_combinations(records, pairs)` | ASTレコードを走査し、2群のIDを `CombinationSplit` で返す |
 
-### 隔離の考え方
+全267,744 ASTのうち16,962件を隔離します。1ペアは5,678件に含まれ、**ペアのop自体は重ならなくても、4操作ASTには2ペアを同時に含められます**。その重複72件を引いて `3 × 5,678 − 72 = 16,962` です。
 
-`RESERVED_PAIRS`の3組で全体の6.34%（16,962件）が隔離される（1組あたり5,678件、互いに
-重複しない）。予約ペアを**両方揃って**含むASTだけを除外し、単体のopは訓練に残す——
-「個々の操作は学習したが、その組合せは見ていない」という状況を作るのが目的で、op自体を
-隠すと組合せ汎化のテストにならないため。267,744件で検証済み（train側への漏れ0件）。
+これは操作ペアの隔離です。別の操作列が同じ挙動になる場合まで隔離する処理ではありません。単体opをこの条件で除去することはありませんが、最終的な訓練splitへの採用を個別に保証するわけではありません。
 
 ## split.py
 
-意味ASTのレコードを`behavior_hash`のグループ単位で訓練/検証/テストに分割する。
+予約ペアを除いた母集団を、固定入力上の挙動ハッシュでグループ化して分けます。
 
 ### 型・定数
 
 | 名前 | 説明 |
 | --- | --- |
-| `DEFAULT_RATIOS` | 既定の分割比率（`{"train": 0.8, "val": 0.1, "test": 0.1}`） |
-| `Split` | 分割結果を持つdataclass（`train`, `val`, `test`はどれも`ast_id`のタプル）。`bucket_of(ast_id)`でどのsplitに入っているかを引ける |
+| `DEFAULT_RATIOS` | train/val/testの目標比率0.8/0.1/0.1 |
+| `Split` | 分割結果の不変dataclass |
+
+### Splitのプロパティ
+
+| フィールド | 説明 |
+| --- | --- |
+| `train`, `val`, `test` | 各splitのAST IDタプル |
+
+### Splitのメソッド
+
+| メソッド | 説明 |
+| --- | --- |
+| `bucket_of(ast_id)` | IDが属するsplit名を返し、どこにもなければ `None` |
 
 ### 関数
 
 | 関数 | 説明 |
 | --- | --- |
-| `is_degenerate(record)` | `always_empty`なレコードか。真なら`behavior_hash`グループの原子性を要求しない対象（`is_identity`は2件しか無いため対象外） |
-| `_cut(ids, ratios)` | 既にシャッフル済みの列を比率通りに3分割する内部ヘルパー（グループ制約なし版。退化レコード用） |
-| `_assign_groups(groups, ratios, rng)` | `behavior_hash`→`ast_id`列のグループを、グループ単位で3バケツへ貪欲に割り当てる内部ヘルパー。サイズの大きいグループから順に「今一番不足しているバケツ」へ入れる |
-| `split_corpus(records, *, ratios=DEFAULT_RATIOS, seed=0)` | 全ASTレコードをtrain/val/testに分ける主関数。退化レコードは個別に無作為分割、それ以外は`behavior_hash`グループ単位で分割し、結果を合成する |
+| `is_degenerate(record)` | `always_empty` を真偽値で返す。`is_identity` は含めない |
+| `_cut(ids, ratios)` | 内部ヘルパー。シャッフル済みのIDを件数比率で3分割 |
+| `_assign_groups(groups, ratios, rng)` | 内部ヘルパー。大きい挙動グループから、全体比率に対する不足が最大のsplitへ割り当てる |
+| `split_corpus(records, *, ratios=DEFAULT_RATIOS, seed=0)` | 通常ASTは挙動グループ単位、`always_empty` は個別に分割し、合成した `Split` を返す |
 
-### 分割の考え方
+通常ASTでは同じ `behavior_hash` が通常3splitを跨ぎません。ただし `always_empty` は全台帳中59,775件が同じ挙動に集まるため例外で、同じ挙動・同じコードがsplitを跨ぐ可能性があります。組合せ汎化テストとの横断的な挙動重複も検査しません。「全データでリーク0」を保証する関数ではありません。
 
-- **分割の単位は`ast_id`でも`semantic_hash`でもなく`behavior_hash`。** `codegen`が連続filterの条件式を並べ替えるため、別の意味AST（`[even, ge]`と`[ge, even]`など）が生成コードの文字列として一致し得る。この2つは`behavior_hash`が最初から一致しているので、グループを丸ごと同じsplitに入れておけば、別split間でのコード文字列衝突（train/testリーク）を防げる。
-- **`always_empty`なレコードだけは例外。** これは`behavior_hash`でグループ化すると267,744件中59,775件（22.3%）が1つの巨大グループに集約されてしまい、80/10/10の構成が成立しなくなる。挙動の多様性がほとんど無いぶん、学習上の価値もどの具体的なop列で実現されていてもほぼ差が無いと判断し、個別に無作為分割する。`is_identity`（2件のみ）はこの特別扱いをせず、通常のグループ単位分割に含める。
-- **`split_corpus`が保証するのは「リークが無いこと」と「件数比率が概ね80/10/10になること」だけ。** 難易度・演算子頻度・コード形式・日本語テンプレートを均す層は`difficulty.py`/`balance.py`が担う。
+比率はグループのサイズに左右されます。後段の候補数・重複排除もあるため、最終レコード数が厳密に80/10/10になる保証はありません。
 
 ## difficulty.py
 
-`difficulty`（操作数1〜4）による意味ASTの間引き。**均等化はしない。**
-
 ### 関数
 
 | 関数 | 説明 |
 | --- | --- |
-| `select_difficulty_thinned(records, *, target_total, seed=0)` | difficulty 1〜3は全数、4だけ無作為に間引いて目標AST数に近づける。採用する`ast_id`の列を返す |
+| `select_difficulty_thinned(records, *, target_total, seed=0)` | 難易度1〜3の全IDと、難易度4から不足分を無作為抽出したIDを返す |
 
-### 難易度の均し方について
-
-`difficulty`1〜4を件数で均等にすると、`difficulty=1`が24種類（学習データのsplit内ではさらに
-少ない）しか無いことが律速し、上限を撤廃してもコーパス全体が目標トークン数（数千万〜億単位）
-に対して2桁以上小さくなる（実測: train内の`difficulty=1`全19件・上限なしの絶対天井は
-1,860組み合わせ）。一方`difficulty`1〜3は合計12,720種類しかなく、全数使ってもトークン予算
-への影響はわずかである。したがって**`difficulty`1〜3は全数残し、`difficulty=4`（全体の95%
-以上を占める）だけを目標総数に合わせて間引く**。`difficulty=4`は間引いた後も他の水準より
-多数派のままであり、これは「均等化」ではない。
-
-演算子の出現頻度は元々ほぼ均等（全体で最小/最大の比率1.28倍）なので、`difficulty=4`を
-無作為に間引くだけで頻度の均等はほぼ保たれる（実測でも間引き後の比率1.276倍とほぼ不変）。
-追加の頻度調整は行っていない。
+低難易度だけで `target_total` を超える場合も1〜3は残します。難易度別の均等化ではありません。操作頻度を直接調整する処理もありません。全AST台帳では各opは44,069回ずつ出現しますが、予約ペア隔離・分割・選抜後には偏り得ます。
 
 ## balance.py
-
-コード形式・日本語テンプレートを、コーパス全体で均等になるよう貪欲に選ぶ。
-`codegen.enumerate_candidates`/`nlgen.enumerate_candidates`が返す「作れる候補の全部」から、
-コーパス全体を通した採用数を`Counter`で追跡しながらAST 1件ごとに選ぶ。
-
-### 型
-
-| 名前 | 説明 |
-| --- | --- |
-| `CodeAxisKey` | コード候補1件が持つ構造の軸の値のタプル（内包表記/ループ・一時変数・reverse方式・return形式・注釈・条件式を並べ替えたか）。**変数名は含まない**（均す対象ではないため） |
-| `Example` | 選ばれた訓練例1件を持つdataclass（`ast_id`, `code`, `code_ops`, `code_style`, `elem_name`, `var_name`, `instruction`, `phrase_ids`）。最終レコードのスキーマ確定はまだ先なので、再構築に要る最低限の情報だけを持つ |
-
-### 関数
-
-| 関数 | 説明 |
-| --- | --- |
-| `code_axis_key(ast_ops, candidate)` | コード候補1件の`CodeAxisKey`を作る |
-| `pick_code_candidates(ast_ops, candidates, *, limit, counts, rng)` | コード候補から`limit`件選ぶ。構造の軸の採用数（`counts`、呼び出し元がAST全件を通して使い回す）が一番少ないものを優先する貪欲法 |
-| `pick_sentence_candidates(candidates, *, limit, counts, rng)` | 日本語文候補から`limit`件選ぶ。使っている言い回しID(`phrase_ids`)ごとの採用数の合計が一番少ない候補を優先する |
-| `_renamed(candidate, rng)` | 採用が決まったコード候補に、変数名（`elem_name`・`stage_var`/`accum_var`）を無作為に差し込み直し、`generate()`を呼び直して`code`を更新する内部ヘルパー |
-| `select_examples(ast_id, ast_ops, code_candidates, sentence_candidates, *, cap, code_counts, phrase_counts, rng)` | 1つのASTについてコードと日本語文をそれぞれ`cap`件まで独立に選び、コード側は`_renamed`で変数名を差し込んでから、シャッフルして位置で対にする。組数はコード・文どちらか少ない方に合わせる |
-
-### 均し方の考え方
-
-候補を1件選ぶたびに、その候補が持つ軸の値の採用数を`Counter`で1つ増やす。次にどの候補を
-選ぶかは、現時点で一番採用数が少ない軸の値を持つ候補を優先する（同点はその都度シャッフルして
-崩す）。これをAST 1件ずつ繰り返すと、コーパス全体を通して極端に偏った軸の値ができにくい。
-呼び出し側（選抜スクリプト）が`Counter`を1つずつ持ち回り、AST全件の処理を通して同じ
-インスタンスを使い続けることで、均しが全体に効く。
-
-コード側の軸は、`reverse_style`のように該当opを持つASTにしか存在しない軸があるため、
-完全な均等（比率1.0）にはならない（実測で比率6.86倍程度）。これは軸ごとの母集団サイズの
-違いによる構造的な上限であり、貪欲法の不具合ではない。日本語の言い回しIDは該当opを持つ
-ASTなら基本的にどれでも使えるため、より均等に近づく（実測で比率2.12倍程度）。
-
-## record.py
-
-選ばれた訓練例（`balance.Example`）を、最終レコードのスキーマ（`dict`）へ組み立てる。
-スキーマは課題文（改定前）の例をもとに、実際の実装に合わせて調整してある。
 
 ### 型・定数
 
 | 名前 | 説明 |
 | --- | --- |
-| `ProbeInput` | 検証に使う固定入力1件の型エイリアス（`tuple[Sequence[int], int]`＝`(xs, k)`） |
+| `CodeAxisKey` | 構造フラグ6個のタプル。内包表記、一時変数、逆順方式、return形式、注釈、filter並べ替え有無 |
+| `Example` | コードと日本語文を対にした不変dataclass |
+
+### Exampleのプロパティ
+
+| フィールド | 説明 |
+| --- | --- |
+| `ast_id` | 元のAST ID |
+| `code` / `code_ops` | コード本文と、filter並べ替えを反映した操作列 |
+| `code_style` | `CodeAxisKey` |
+| `elem_name` / `var_name` | 要素変数名と段階変数の接頭辞または結果変数名 |
+| `instruction` / `phrase_ids` | 日本語指示文とAST順の言い回しID |
 
 ### 関数
 
 | 関数 | 説明 |
 | --- | --- |
-| `_verify(example, probes)` | `example.code`を検査・実行し、`verification`フィールド（`syntax_ok`/`ast_safe`/`tests_passed`）を作る内部ヘルパー。`safety.check()`に落ちた場合は`ast.parse`自体の失敗かどうかで`syntax_ok`と`ast_safe`を分け、実行はしない。安全なら`probes`の各入力で参照インタプリタ（`interp.run`）の出力と`sandbox.execute()`の出力を比較し、1件でも不一致・例外なら`tests_passed=False` |
-| `build_record(number, example, ast_record, probes, *, provenance, teacher_model, teacher_revision)` | 1件の`Example`を最終レコードへ組み立てる主関数。`spec_id`は`number`から`task-{n:06d}`の形で作る。`code_style`は`example.code_style`の6軸に`elem_name`/`var_name`を加えて構造化する。`prompt_hashes`は`example.phrase_ids`を`provenance`（`phrases/ja_phrases_v1_provenance.json`の中身）で引いた`prompt_sha256`の重複無し集合。`tests`は常に空リスト（hidden testは評価フェーズで別途生成するため、訓練レコードには埋め込まない） |
+| `code_axis_key(ast_ops, candidate)` | 候補の構造フラグ6個を返す。条件式の変更は元の操作列との不一致で表す |
+| `pick_code_candidates(ast_ops, candidates, *, limit, counts, rng)` | 構造タプル全体の採用数が少ない候補を最大 `limit` 件選び、呼び出し側の `counts` を更新する |
+| `pick_sentence_candidates(candidates, *, limit, counts, rng)` | 言い回しIDの採用数の合計が少ない候補を最大 `limit` 件選び、`counts` を更新する |
+| `_renamed(candidate, rng)` | 内部ヘルパー。候補の変数名を乱数で選び直してコードを再生成 |
+| `select_examples(ast_id, ast_ops, code_candidates, sentence_candidates, *, cap, code_counts, phrase_counts, rng)` | 両側を独立に最大 `cap` 件選び、変数名を変え、シャッフルして短い側の件数だけ対にする |
 
-### スキーマ設計の注記
+コード側の集計キーは6軸の**組全体**であり、各軸のTrue/Falseを別々に均す方式ではありません。候補プールを一度ソートしてまとめて選び、その後でカウンタを更新するため、同じAST内で1件採るたびに順位を計算し直すわけでもありません。
 
-- `teacher_model`/`teacher_revision`は全runで共通の値なので呼び出し側が定数として渡す。
-  `prompt_hash`は単数ではなく`prompt_hashes`（複数）にしてある——1レコードの指示文は複数opの
-  言い回しを組み合わせて作るため、由来も複数になりうる。
-- `verification`は仮の値を置かず、`safety.check()`と`sandbox.execute()`をレコード組み立て時に
-  実際に走らせて判定する。
-- **選抜条件「長さ上限を超えない」は未実装（意図的に先送り、2026-08-23時点）。** トークナイザが
-  まだ無く（Phase 2、未着手）、本来の単位（トークン数）で測れないため。文字数での暫定フィルタも
-  検討したが、トークナイザ完成後にどのみち作り直しになるので見送った。詳しい経緯は
-  `scripts/build_dataset.py`のモジュールdocstring参照。
+`build_dataset.py` は各チャンクで独立したカウンタを作ります。全ワーカー共有ではなく、余った候補や後の重複排除で消えた候補も集計から差し引きません。採用数の偏りを抑えるための近似です。
+
+## record.py
+
+### 型・定数
+
+| 名前 | 説明 |
+| --- | --- |
+| `ProbeInput` | 検証入力 `(xs, k)` の型エイリアス |
+
+### 関数
+
+| 関数 | 説明 |
+| --- | --- |
+| `_verify(example, probes)` | 内部ヘルパー。構文検査と参照インタプリタへの実行結果照合から3つの検証フラグを返す |
+| `build_record(number, example, ast_record, probes, *, provenance, teacher_model, teacher_revision)` | 例・ASTの情報・言い回しの由来・検証結果を最終レコードの辞書にまとめる |
+
+構文が不正なら実行せず、実行例外や不一致は `tests_passed=False` にします。正解は `example.code_ops` の参照実行です。**検証フラグを記録する処理であり、falseのレコードを除外する処理はありません。**
+
+`tests` は常に空リストです。現在の評価は [scripts/evaluate.py](../../scripts/evaluate.py) が外部の凍結probe setを読み、新規hidden入力は生成しません。`prompt_hashes` は由来が見つかった言い回しのハッシュだけを重複除去して並べるため、由来の完全性を検証するフィールドではありません。
+
+データ生成時のトークン長フィルタは未実装です。トークナイザは既にあり、訓練用の `model.data.iter_padded_records` は系列長超過で例外を送出します。最終フィールドの一覧は [Dataset Card](../../data/dataset/README.md) を参照してください。
