@@ -1,0 +1,72 @@
+# Boku-nano本体の訓練設定。
+#
+#   python -m scripts.train
+#   python -m scripts.train train.target_real_tokens=100_000_000
+#   python -m scripts.train optim.max_lr=1e-4 eval.interval=100
+
+defaults:
+  - model: default
+  - _self_
+
+seed: 0
+
+paths:
+  train_in: data/dataset/train.jsonl
+  val_in: data/dataset/val.jsonl
+  tokenizer: data/tokenizer/tokenizer.json
+  probes: probes/behavior_probe_set_v1.jsonl
+  out_dir: runs
+
+optim:
+  max_lr: 3.0e-4
+  # betas・min_lr_ratioはユーザー指定に無い値。GPT-3系の慣例値
+  # (beta2=0.95、cosine減衰の下限を最大値の10%)を採用している。
+  #
+  # EXPERIMENTS.mdのスイープ(exp01〜exp19)で一度beta2=0.90・min_lr_ratio=0.0に
+  # 変更を試したが、100Mトークン(3,051 step)ではgen_pass_rateが0.81まで上がる
+  # 一方、課題本来の目標である200Mトークン(6,103 step)で同じ値を使うとむしろ
+  # 悪化した(pass_rate 0.00近辺。同条件のspec-defaultは0.69)。total_stepsが
+  # 変わるとcosine decay全体の形が変わるため、ある学習量に対して効いた値が別の
+  # 学習量では効かない(むしろ害になる)ことが分かったため、既定値に戻した。
+  # val_loss自体はどの組み合わせでもtarget_real_tokensなりの値にほぼ収束し
+  # (0.118〜0.122の範囲)、betas/min_lr_ratioへの感度は低い。
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
+  warmup_ratio: 0.03
+  min_lr_ratio: 0.1
+  grad_clip: 1.0
+
+train:
+  global_batch_sequences: 128
+  # 1 optimizer stepで処理するレコード数(パディング方式なので単位は「系列」)。
+  # 旧 global_batch_tokens=32768 / max_seq_len=256 と同じ。
+  # 学習量の予算。<|pad|>を除いた実トークン数で数える(パディング込みの総順伝播
+  # トークン数はこの pad_fraction 分だけ多くなる。起動ログとmlflowで両方確認できる)。
+  # total_steps = target_real_tokens / (global_batch_sequences * 平均実トークン長)。
+  # 100M〜300Mの中央値。--train.target_real_tokens=で上書きする。
+  target_real_tokens: 200_000_000
+
+eval:
+  interval: 200 # 100〜250の中央
+  n_batches: 8 # 検証lossを平均する窓数
+  generation:
+    n_samples: 16
+    max_new_tokens: 192
+    temperature: 0.0 # 貪欲デコード固定(このプロジェクトではsamplingは実装しない)
+
+checkpoint:
+  interval: 500
+
+mlflow:
+  experiment: boku-nano
+  # mlflow>=3はファイルベースのtracking backend(./mlruns相当)がmaintenance modeで
+  # 使えないため、sqliteをbackendにする。
+  tracking_db: runs/mlflow.db
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null
