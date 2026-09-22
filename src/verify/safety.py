@@ -86,6 +86,11 @@ def check(code: str) -> str | None:
     except SyntaxError as e:
         return f"ast.parseに失敗: {e}"
 
+    return check_ast(tree) or check_signature(tree)
+
+
+def check_ast(tree: ast.Module) -> str | None:
+    """構文・呼び出し・属性の許可リストだけを検査する。"""
     for node in ast.walk(tree):
         node_type = type(node)
         if node_type not in ALLOWED_NODE_TYPES:
@@ -101,10 +106,10 @@ def check(code: str) -> str | None:
             elif not isinstance(node.func, ast.Attribute):
                 return "許可されていない呼び出しの形"
 
-    return _check_signature(tree)
+    return None
 
 
-def _check_signature(tree: ast.Module) -> str | None:
+def check_signature(tree: ast.Module) -> str | None:
     """モジュール直下が`def solve(xs, k):`（型注釈の有無は問わない）1つだけであることを確認する。"""
     if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
         return "モジュール直下がsolve関数1つだけではない"

@@ -253,3 +253,24 @@ python -m scripts.evaluate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt -
 言い換え・組合せは全件を使い、通常テストだけを抽出します。生成コードは構文検査と全148入力の参照出力一致で合格です。境界値の合格率は20入力だけで判定した各例の合否を、評価した3集合の**件数で加重して**集計します。
 
 存在しないデータファイルはスキップします。`--out` の親ディレクトリは自動作成しません。EOSを出したかどうかは合格条件に含まれません。これらの評価は新しいhidden入力の生成ではなく、データ構築にも使った凍結probe setの再利用です。
+
+### 評価指標と性能計測
+
+学習中の生成評価と単独評価の両方で、次の率を記録します。分母はすべて評価した生成コードの全件数です。
+
+| キー | 判定 |
+| --- | --- |
+| `syntax_valid_rate` | `ast.parse` に成功 |
+| `safe_ast_rate` | 構文・呼び出し・属性の許可リストに適合 |
+| `signature_valid_rate` | モジュール直下に `solve(xs, k)` を正しく定義 |
+| `executable_rate` | 安全性とシグネチャの検査を通り、全probeでtimeout・例外なく実行 |
+
+構文エラーの場合は4項目とも失敗です。Safe-ASTとシグネチャは独立に判定します。Executableは出力の正しさを問いません。誤答が出ても後続probeの実行を続けます。単独評価のJSONには各生成コードの判定フラグと `errors`（検査失敗・実行例外の理由）も保存します。
+
+Validation lossは従来どおり学習時の `val_loss` として記録します。組合せ汎化率は従来の組合せカテゴリの `pass_rate` に加え、単独評価JSONの `combination_generalization_rate` にも保存します。組合せデータが無い場合は `null` です。固定probeによる既存の合格判定を使います。
+
+- `train_tokens_per_second`: padを除いた累計学習トークン数 / 累計学習step時間。データ取得・バッチ化・forward・backward・更新を含み、検証・ログ・checkpoint保存は除外します。
+- `generation_tokens_per_second`: 生成したトークン数 / 生成処理時間。EOSを含み、EOS後の埋め草padとプロンプトは除外します。生成処理内のテンソル準備とCPUへの結果転送を含み、tokenize・decode・コード検査は除外します。単独評価ではカテゴリごと、学習時は生成評価ごとに計測します。`generated_tokens` と `generation_seconds` も保存します。
+- `max_gpu_memory_bytes`: 実行開始時にピーク統計をリセットした後のPyTorch CUDA allocatedメモリの最大値（bytes）。モデルのロード・学習・評価を含みます。予約済みメモリや他プロセスの使用量は含みません。CPUでは単独評価JSONは `null`、MLflowにはこのキーを記録しません。
+
+CUDAでは時間計測の前後に同期します。学習指標はコンソールとMLflow、単独評価指標はコンソールと `--out` 指定時のJSONに記録します。

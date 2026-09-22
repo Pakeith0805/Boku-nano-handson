@@ -50,7 +50,7 @@ from model.generate import batch_greedy_generate
 from model.schedule import lr_at_step
 from model.transformer import BokuNanoModel, ModelConfig
 from src.probes.behavior_probes import load_probe_set
-from src.verify import safety, sandbox
+from src.verify.metrics import aggregate, evaluate_code
 
 Record = tuple[list[int], list[int]]  # (トークン列, loss_mask)。パディング前なので長さは可変。
 
@@ -162,14 +162,17 @@ def _eval_generation(
     prompts = [[ids.bos, ids.task, *enc.ids, ids.code] for enc in encoded]
     prompt_width = max(len(p) for p in prompts)
     # rowsにはprompt, 生成結果や特殊トークン、pad idが入っている。rowsはrowのリスト
+    performance: dict[str, float | int] = {}
     rows = batch_greedy_generate(
         model,
         prompts,
         eos_id=ids.eos,
         pad_id=ids.pad,
         max_new_tokens=cfg.eval.generation.max_new_tokens,
+        metrics=performance,
     )
 
+    results = []
     passed = 0
     examples: list[tuple[str, str, bool]] = []
     # zipで、sampleの0番目の要素とrowsの0番目の要素を同時に取り出し、タプルとしている。
@@ -177,28 +180,15 @@ def _eval_generation(
         # gen_codeには生成されたコード本文だけが入る。
         gen_code = tokenizer.decode(row[prompt_width:], skip_special_tokens=True)
 
-        # 安全性チェック。大丈夫ならNoneが入るし、だめならその理由が入る。
-        check_result = safety.check(gen_code)
-        # 大丈夫ならtrue、だめならfalse。
-        ok = check_result is None
-        # コードが安全な場合のみコードを実行してみる。
-        # 実行結果が参照コードと同じだった場合のみ合格。
-        if ok:
-            for xs, k in probes:
-                try:
-                    expected = sandbox.execute(reference_code, xs, k)
-                    got = sandbox.execute(gen_code, xs, k)
-                except Exception:
-                    ok = False
-                    break
-                if got != expected:
-                    ok = False
-                    break
+        result = evaluate_code(gen_code, reference_code, probes)
+        results.append(result)
+        ok = result["passed"]
         passed += int(ok)
         examples.append((instruction, gen_code, ok))
 
     # 返り値は、生成結果の合格率と、その例。
-    return {"pass_rate": passed / len(sample), "examples": examples}
+    return {"pass_rate": passed / len(sample), "examples": examples,
+            **aggregate(results), **performance}
 
 # hydraの読み込み
 @hydra.main(config_path="../conf", config_name="train", version_base=None)
@@ -207,6 +197,8 @@ def main(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     torch.manual_seed(cfg.seed)
 
     tokenizer_path = root / cfg.paths.tokenizer
@@ -306,13 +298,17 @@ def main(cfg: DictConfig) -> None:
         )
 
         # 学習開始時刻を指定。
-        t_start = time.time()
+        t_start = time.perf_counter()
+        training_seconds = 0.0
         # <|pad|>を除いた実トークンの累計
         real_tokens_seen = 0 
         # パディング込み(モデルが実際に順伝播した)トークンの累計
         padded_tokens_seen = 0  
         # さっき指定したステップ数だけ学習を繰り返す。
         for step in range(total_steps):
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            step_started = time.perf_counter()
             # 学習率を計算。
             lr = lr_at_step(
                 step,
@@ -347,6 +343,9 @@ def main(cfg: DictConfig) -> None:
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.optim.grad_clip)
             # 重みを更新。
             optimizer.step()
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            training_seconds += time.perf_counter() - step_started
 
             # 現在のステップが最後かどうか判定。最後ならTrueが入る。
             is_last_step = step == total_steps - 1
@@ -360,7 +359,17 @@ def main(cfg: DictConfig) -> None:
                 # 生成結果の合格率と生成例などが入る。
                 gen = _eval_generation(model, val_records, tokenizer, ids, probes, cfg)
                 # 学習開始からの経過時間を計算。
-                elapsed = time.time() - t_start
+                elapsed = time.perf_counter() - t_start
+                metrics = {
+                    key: value for key, value in gen.items()
+                    if key not in {"examples", "pass_rate"}
+                }
+                metrics.update(
+                    training_seconds=training_seconds,
+                    train_tokens_per_second=real_tokens_seen / training_seconds,
+                )
+                if device.type == "cuda":
+                    metrics["max_gpu_memory_bytes"] = torch.cuda.max_memory_allocated(device)
                 print(
                     f"step {step:>5}/{total_steps} lr={lr:.2e} "
                     f"train_loss={step_loss:.4f} val_loss={val_loss:.4f} "
@@ -368,6 +377,7 @@ def main(cfg: DictConfig) -> None:
                     f"real_tok={real_tokens_seen:,} padded_tok={padded_tokens_seen:,} "
                     f"elapsed={elapsed:.0f}s"
                 )
+                print("  " + " ".join(f"{key}={value:.4g}" for key, value in metrics.items()))
                 # 生成例を表示
                 for instruction, gen_code, ok in gen["examples"][:2]:
                     mark = "OK" if ok else "NG"
@@ -375,6 +385,7 @@ def main(cfg: DictConfig) -> None:
                 # mlflowにlossや評価結果を保存。
                 mlflow.log_metrics(
                     {
+                        **metrics,
                         "train_loss": step_loss,
                         "val_loss": val_loss,
                         "lr": lr,

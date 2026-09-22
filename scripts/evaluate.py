@@ -43,6 +43,7 @@ from model.data import SpecialIds, load_records, load_special_ids
 from model.generate import batch_greedy_generate
 from src.probes.behavior_probes import ProbeInput, load_probe_set
 from src.verify import safety, sandbox
+from src.verify.metrics import aggregate, evaluate_code
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKENIZER_PATH = ROOT / "data" / "tokenizer" / "tokenizer.json"
@@ -87,6 +88,7 @@ def generate_codes(
     *,
     batch_size: int,
     max_new_tokens: int,
+    metrics: dict[str, float | int] | None = None,
 ) -> list[str]:
     """`records`(instruction, reference_code)の指示文ぶんだけ生成し、コード文字列の列を返す。
 
@@ -99,7 +101,8 @@ def generate_codes(
         prompts = [[ids.bos, ids.task, *enc.ids, ids.code] for enc in encoded]
         prompt_width = max(len(p) for p in prompts)
         rows = batch_greedy_generate(
-            model, prompts, eos_id=ids.eos, pad_id=ids.pad, max_new_tokens=max_new_tokens
+            model, prompts, eos_id=ids.eos, pad_id=ids.pad, max_new_tokens=max_new_tokens,
+            metrics=metrics
         )
         codes.extend(tokenizer.decode(row[prompt_width:], skip_special_tokens=True) for row in rows)
     return codes
@@ -136,7 +139,7 @@ def evaluate_category(
                 "instruction": instruction,
                 "generated_code": gen_code,
                 "reference_code": reference_code,
-                "passed": check_pass(gen_code, reference_code, probes_full),
+                **evaluate_code(gen_code, reference_code, probes_full),
                 "boundary_passed": check_pass(gen_code, reference_code, probes_boundary),
             }
         )
@@ -144,6 +147,7 @@ def evaluate_category(
     n_pass = sum(r["passed"] for r in results)
     n_boundary_pass = sum(r["boundary_passed"] for r in results)
     return {
+        **aggregate(results),
         "name": name,
         "n": n,
         "pass_rate": n_pass / n if n else 0.0,
@@ -157,6 +161,10 @@ def print_report(reports: list[dict[str, Any]], boundary_overall: float, boundar
     print(f"{'テスト':16s} {'件数':>8s} {'pass_rate':>10s} {'boundary内訳':>12s}")
     for r in reports:
         print(f"{r['name']:16s} {r['n']:8d} {r['pass_rate']:9.1%} {r['boundary_pass_rate']:11.1%}")
+        print("  " + " ".join(f"{key}={r[key]:.1%}" for key in (
+            "syntax_valid_rate", "safe_ast_rate", "signature_valid_rate", "executable_rate"
+        )))
+        print(f"  generation_tokens/s={r['generation_tokens_per_second']:.1f}")
     print()
     print(f"境界値テスト(3カテゴリ合算 {boundary_n}件、probe20件で判定): {boundary_overall:.1%}")
 
@@ -177,6 +185,8 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
     ids = load_special_ids(tokenizer)
     model, step = load_model(Path(args.checkpoint), device)
@@ -194,19 +204,29 @@ def main() -> None:
         limit = args.limit if name == "通常テスト" else 0
         records = sample_records(path, limit, args.seed)
         print(f"{name}: {len(records)}件を生成中...")
+        performance: dict[str, float | int] = {
+            "generation_seconds": 0.0, "generated_tokens": 0,
+            "generation_tokens_per_second": 0.0,
+        }
         gen_codes = generate_codes(
-            model, tokenizer, ids, records, batch_size=args.batch_size, max_new_tokens=args.max_new_tokens
+            model, tokenizer, ids, records, batch_size=args.batch_size, max_new_tokens=args.max_new_tokens,
+            metrics=performance,
         )
         report = evaluate_category(
             name, records, gen_codes, probes_full=probes_full, probes_boundary=probes_boundary
         )
+        report.update(performance)
         reports.append(report)
 
     total_boundary_pass = sum(r["boundary_pass_rate"] * r["n"] for r in reports)
     total_n = sum(r["n"] for r in reports)
     boundary_overall = total_boundary_pass / total_n if total_n else 0.0
 
+    peak = torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None
+    combination_rate = next((r["pass_rate"] for r in reports
+                             if r["name"] == "組合せ汎化テスト"), None)
     print_report(reports, boundary_overall, total_n)
+    print(f"最大GPUメモリ (allocated bytes): {peak if peak is not None else 'N/A (CPU)'}")
 
     if args.out:
         out_path = Path(args.out)
@@ -215,6 +235,9 @@ def main() -> None:
                 {
                     "checkpoint": str(args.checkpoint),
                     "step": step,
+                    "device": str(device),
+                    "max_gpu_memory_bytes": peak,
+                    "combination_generalization_rate": combination_rate,
                     "categories": reports,
                     "boundary_pass_rate_overall": boundary_overall,
                 },

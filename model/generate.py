@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import torch
 
 from model.transformer import BokuNanoModel
@@ -14,6 +16,7 @@ def batch_greedy_generate(
     *, # これ以降はキーワード引数専用にする。つまり、名前を指定して渡さなければならない。
     eos_id: int,
     pad_id: int,
+    metrics: dict[str, float | int] | None = None,
     max_new_tokens: int, # 最大何トークンまで生成し続けるか
 ) -> list[list[int]]:
     """返り値のshapeは(batch, seq_len)。プロンプトの数だけの、プロンプトのトークンから生成されたトークンまでの一件分が入る。
@@ -25,6 +28,10 @@ def batch_greedy_generate(
     ある行が`eos_id`を出した後は、以降その行にはモデルの予測を使わず`pad_id`で埋める。
     """
     device = next(model.parameters()).device # モデルが扱っているデバイス
+    if metrics is not None:
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        started = time.perf_counter()
     max_len = model.cfg.max_seq_len # モデルが扱える最大系列長
     # 一番長いプロンプトに合わせる
     prompt_width = max(len(p) for p in prompts)
@@ -80,7 +87,23 @@ def batch_greedy_generate(
         model.train(was_training)
 
     # idsをtensorからlistに直し、出力。
-    return ids.tolist()
+    rows = ids.tolist()
+    if metrics is not None:
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        seconds = time.perf_counter() - started
+        # EOSは生成トークンとして数え、その後の埋め草padは数えない。
+        count = 0
+        for row in rows:
+            tail = row[prompt_width:]
+            count += tail.index(eos_id) + 1 if eos_id in tail else len(tail)
+        metrics["generation_seconds"] = metrics.get("generation_seconds", 0.0) + seconds
+        metrics["generated_tokens"] = metrics.get("generated_tokens", 0) + count
+        metrics["generation_tokens_per_second"] = (
+            metrics["generated_tokens"] / metrics["generation_seconds"]
+            if metrics["generation_seconds"] else 0.0
+        )
+    return rows
 
 
 @torch.no_grad()
