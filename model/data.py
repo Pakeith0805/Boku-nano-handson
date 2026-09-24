@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import random
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
 from tokenizers import Tokenizer
+from src.verify.records import is_verified
 
 # こうやって書くと、SpecialIDs.padみたいな感じで呼び出せるようになる。初期化後の書き換え不可
 class SpecialIds(NamedTuple):
@@ -42,12 +44,20 @@ def load_special_ids(tokenizer: Tokenizer) -> SpecialIds:
 
 # 学習用jsonを読み込み、日本語と、それに対応するコードのみを抜き出す。
 def load_records(path: Path) -> list[tuple[str, str]]:
-    """`instruction_ja`・`reference_code`だけを取り出す(学習に使わない他フィールドは持たない)。"""
+    """検証済みの行から指示・コードを取り出す。不合格・フラグ欠落は除外。"""
     records: list[tuple[str, str]] = []
+    rejected = 0
     with path.open(encoding="utf-8") as f:
         for line in f:
             r = json.loads(line)
+            if not is_verified(r):
+                rejected += 1
+                continue
             records.append((r["instruction_ja"], r["reference_code"]))
+    if rejected:
+        warnings.warn(f"{path}: 検証不合格またはフラグ欠落の{rejected}件を除外", stacklevel=2)
+    if not records:
+        raise ValueError(f"検証済みレコードがありません: {path}")
     return records
 
 # トークナイズされた、学習に実際に使う数字のリストを返す関数

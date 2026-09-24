@@ -32,6 +32,8 @@ def _verify(example: Example, probes: Sequence[ProbeInput]) -> dict[str, bool]:
     `safety.check()`に落ちた場合、`ast.parse`自体に失敗したのかそれ以外の理由かで
     `syntax_ok`と`ast_safe`を分ける。安全でなければ実行しない（`tests_passed`も`False`）。
     """
+    if not probes:
+        raise ValueError("検証には1件以上の入力が必要です")
     reason = safety.check(example.code)
     if reason is not None:
         return {

@@ -133,7 +133,7 @@ combination（予約ペアの隔離）
 | `_verify(example, probes)` | 内部ヘルパー。構文検査と参照インタプリタへの実行結果照合から3つの検証フラグを返す |
 | `build_record(number, example, ast_record, probes, *, provenance, teacher_model, teacher_revision)` | 例・ASTの情報・言い回しの由来・検証結果を最終レコードの辞書にまとめる |
 
-構文が不正なら実行せず、実行例外や不一致は `tests_passed=False` にします。正解は `example.code_ops` の参照実行です。**検証フラグを記録する処理であり、falseのレコードを除外する処理はありません。**
+構文が不正なら実行せず、実行例外や不一致は `tests_passed=False` にします。正解は `example.code_ops` の参照実行です。空の検証入力はエラーです。`scripts/build_dataset.py` は `src.verify.records.is_verified()` で3フラグがすべてtrueのレコードだけを保存候補に残し、除外件数を表示します。`model.data.load_records()` も不合格・フラグ欠落を除外します。
 
 `tests` は常に空リストです。現在の評価は [scripts/evaluate.py](../../scripts/evaluate.py) が外部の凍結probe setを読み、新規hidden入力は生成しません。`prompt_hashes` は由来が見つかった言い回しのハッシュだけを重複除去して並べるため、由来の完全性を検証するフィールドではありません。
 

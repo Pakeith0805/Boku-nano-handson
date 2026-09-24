@@ -74,6 +74,7 @@ from src.select.balance import Example, select_examples
 from src.select.combination import RESERVED_PAIRS, carve_out_combinations
 from src.select.difficulty import select_difficulty_thinned
 from src.select.record import build_record
+from src.verify.records import is_verified
 from src.select.split import split_corpus
 from src.semantics.corpus import read_records, write_records
 from src.semantics.semantic_ast import SemanticAST
@@ -165,19 +166,24 @@ def _process_chunk(
     code_counts: Counter = Counter()
     phrase_counts: Counter = Counter()
     out: list[dict[str, Any]] = []
+    rejected = 0
     for rec in ast_records:
         examples = _build_examples_for_ast(
             rec["ast_id"], rec, phrases, cap=cap, code_counts=code_counts, phrase_counts=phrase_counts, rng=rng,
         )
         for ex in examples:
-            out.append(
-                build_record(
-                    0, ex, rec, probes,
-                    provenance=provenance,
-                    teacher_model=TEACHER_MODEL,
-                    teacher_revision=TEACHER_REVISION,
-                )
+            record = build_record(
+                0, ex, rec, probes,
+                provenance=provenance,
+                teacher_model=TEACHER_MODEL,
+                teacher_revision=TEACHER_REVISION,
             )
+            if not is_verified(record):
+                rejected += 1
+                continue
+            out.append(record)
+    if rejected:
+        print(f"検証不合格を除外: {rejected}件 (chunk seed={seed})", flush=True)
     return out
 
 

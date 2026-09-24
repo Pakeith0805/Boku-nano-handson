@@ -72,7 +72,7 @@ JSONLを読み、1レコードを `[bos, task, *instruction_ids, code, *code_ids
 | 関数 | 説明 |
 | --- | --- |
 | `load_special_ids(tokenizer)` | 5つのIDを `SpecialIds` で返す。見つからなければ `ValueError` |
-| `load_records(path)` | JSONL全行を読み、`(instruction_ja, reference_code)` のリストを返す |
+| `load_records(path)` | 検証3フラグがすべてtrueの行から `(instruction_ja, reference_code)` を返す。不合格・欠落の除外件数は警告し、有効行が0件ならエラー |
 | `encode_record(tokenizer, instruction, code, ids)` | トークン列と、各位置から次トークンを予測する損失マスクを返す |
 | `iter_padded_records(records, tokenizer, ids, *, max_seq_len, rng)` | エポックごとに順序をシャッフルし、可変長の1レコードを無限にyieldする。上限を超えるレコードは切り詰めず `ValueError`。非空の `records` が前提 |
 
