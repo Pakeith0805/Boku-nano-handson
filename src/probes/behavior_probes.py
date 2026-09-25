@@ -287,6 +287,7 @@ def load_probe_set(path: Path) -> list[ProbeInput]:
     """保存した入力集合を**順序を保って**読み戻す。
 
     順序が変わると出力列も変わり、`behavior_hash` が全件変わってしまう。
+    帰り値はprobe_set(参照コードと生成コードが一致しているか確かめるためのリストと数値の集合)
     """
     probes: list[ProbeInput] = []
     for line in path.read_text(encoding="utf-8").splitlines():

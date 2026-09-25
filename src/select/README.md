@@ -135,6 +135,6 @@ combination（予約ペアの隔離）
 
 構文が不正なら実行せず、実行例外や不一致は `tests_passed=False` にします。正解は `example.code_ops` の参照実行です。空の検証入力はエラーです。`scripts/build_dataset.py` は `src.verify.records.is_verified()` で3フラグがすべてtrueのレコードだけを保存候補に残し、除外件数を表示します。`model.data.load_records()` も不合格・フラグ欠落を除外します。
 
-`tests` は常に空リストです。現在の評価は [scripts/evaluate.py](../../scripts/evaluate.py) が外部の凍結probe setを読み、新規hidden入力は生成しません。`prompt_hashes` は由来が見つかった言い回しのハッシュだけを重複除去して並べるため、由来の完全性を検証するフィールドではありません。
+`tests` は常に空リストです。最終評価の [scripts/evaluate.py](../../scripts/evaluate.py) が問題ごとに新規hidden入力を作り、評価レポートに保存します。固定probeは比較用・境界値評価にも使います。`prompt_hashes` は由来が見つかった言い回しのハッシュだけを重複除去して並べるため、由来の完全性を検証するフィールドではありません。
 
 データ生成時のトークン長フィルタは未実装です。トークナイザは既にあり、訓練用の `model.data.iter_padded_records` は系列長超過で例外を送出します。最終フィールドの一覧は [Dataset Card](../../data/dataset/README.md) を参照してください。

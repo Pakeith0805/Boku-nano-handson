@@ -11,13 +11,16 @@ python -m scripts.evaluate --checkpoint ... --out report.json  # 結果をJSON�
 
 | テスト | データ | 判定方法 |
 | --- | --- | --- |
-| 通常テスト | `data/dataset/test.jsonl` | 生成コードを固定入力集合**全148件**で参照コードと突き合わせる |
+| 通常テスト | `data/dataset/test.jsonl` | 問題ごとの新規hidden入力（既定20件）で参照コードと突き合わせる |
 | 言い換えテスト | `data/dataset/test_paraphrase.jsonl` | 同上 |
 | 組合せ汎化テスト | `data/dataset/test_combination.jsonl` | 同上 |
 | 境界値テスト | 上記3つで**既に生成したコード**を再利用 | 全148件のうち`kind=="boundary"`の20件だけで突き合わせ直す |
 
 境界値テストは別ファイルを持たない設計(`data/README.md`参照)——生成済みコードに
 境界値入力だけを流し込み直すだけで足りるため、他の3テストとは別に生成をやり直さない。
+固定入力148件での合格率も、比較用の別指標として残す。
+hidden入力は固定入力と重複せず、`--hidden-seed`と問題文で再現できる。
+`--out`指定時は実際のhidden入力も保存する。学習中の評価には使用しない。
 
 ## 判定基準
 
@@ -42,6 +45,9 @@ from model.checkpoint import load_model
 from model.data import SpecialIds, load_records, load_special_ids
 from model.generate import batch_greedy_generate
 from src.probes.behavior_probes import ProbeInput, load_probe_set
+from src.probes.hidden_inputs import (
+    DEFAULT_HIDDEN_COUNT, DEFAULT_HIDDEN_SEED, HIDDEN_PROTOCOL, hidden_inputs,
+)
 from src.verify import safety, sandbox
 from src.verify.metrics import aggregate, evaluate_code
 
@@ -130,16 +136,24 @@ def evaluate_category(
     *,
     probes_full: list[ProbeInput],
     probes_boundary: list[ProbeInput],
+    hidden_count: int = DEFAULT_HIDDEN_COUNT,
+    hidden_seed: int = DEFAULT_HIDDEN_SEED,
 ) -> dict[str, Any]:
-    """1カテゴリぶんの結果をまとめる。全148件での合否と、境界値20件だけでの合否を両方持つ。"""
+    """hidden testを主指標にし、固定probe・境界値の合否は別に記録する。"""
     results = []
-    for (instruction, reference_code), gen_code in zip(records, gen_codes):
+    for (instruction, reference_code), gen_code in zip(records, gen_codes, strict=True):
+        probes_hidden = hidden_inputs(
+            instruction, exclude=probes_full,
+            count=hidden_count, seed=hidden_seed,
+        )
         results.append(
             {
                 "instruction": instruction,
                 "generated_code": gen_code,
                 "reference_code": reference_code,
-                **evaluate_code(gen_code, reference_code, probes_full),
+                **evaluate_code(gen_code, reference_code, probes_hidden),
+                "hidden_inputs": [{"xs": list(xs), "k": k} for xs, k in probes_hidden],
+                "fixed_probe_passed": check_pass(gen_code, reference_code, probes_full),
                 "boundary_passed": check_pass(gen_code, reference_code, probes_boundary),
             }
         )
@@ -151,6 +165,10 @@ def evaluate_category(
         "name": name,
         "n": n,
         "pass_rate": n_pass / n if n else 0.0,
+        "fixed_probe_pass_rate": sum(r["fixed_probe_passed"] for r in results) / n if n else 0.0,
+        "evaluation_protocol": HIDDEN_PROTOCOL,
+        "hidden_count": hidden_count,
+        "hidden_seed": hidden_seed,
         "boundary_pass_rate": n_boundary_pass / n if n else 0.0,
         "results": results,
     }
@@ -158,9 +176,10 @@ def evaluate_category(
 
 def print_report(reports: list[dict[str, Any]], boundary_overall: float, boundary_n: int) -> None:
     print()
-    print(f"{'テスト':16s} {'件数':>8s} {'pass_rate':>10s} {'boundary内訳':>12s}")
+    print(f"{'テスト':16s} {'件数':>8s} {'hidden合格率':>12s} {'境界値合格率':>12s}")
     for r in reports:
         print(f"{r['name']:16s} {r['n']:8d} {r['pass_rate']:9.1%} {r['boundary_pass_rate']:11.1%}")
+        print(f"  固定probe合格率（比較用）={r['fixed_probe_pass_rate']:.1%}")
         print("  " + " ".join(f"{key}={r[key]:.1%}" for key in (
             "syntax_valid_rate", "safe_ast_rate", "signature_valid_rate", "executable_rate"
         )))
@@ -179,10 +198,16 @@ def main() -> None:
         help=f"通常テストの件数を絞る(既定{DEFAULT_LIMIT}件、0で全件)。言い換え・組合せ汎化は常に全件",
     )
     parser.add_argument("--seed", type=int, default=0, help="通常テストの間引きに使う乱数シード")
+    parser.add_argument("--hidden-count", type=int, default=DEFAULT_HIDDEN_COUNT,
+                        help="問題ごとのhidden入力数（20以上）")
+    parser.add_argument("--hidden-seed", type=int, default=DEFAULT_HIDDEN_SEED,
+                        help="hidden入力専用の再現用seed")
     parser.add_argument("--batch-size", type=int, default=64, help="1回のforwardにまとめる件数")
     parser.add_argument("--max-new-tokens", type=int, default=192)
     parser.add_argument("--out", help="結果(1件ごとの生成コード込み)をJSONで書き出す先")
     args = parser.parse_args()
+    if args.hidden_count < 20:
+        parser.error("--hidden-count は20以上にしてください")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
@@ -195,6 +220,7 @@ def main() -> None:
     probes_full = load_probe_set(PROBES_PATH)
     probes_boundary = load_boundary_probes(PROBES_PATH)
     print(f"probe set: 全{len(probes_full)}件(うちboundary {len(probes_boundary)}件)")
+    print(f"hidden test: 問題ごとに{args.hidden_count}件、seed={args.hidden_seed}")
 
     reports = []
     for name, path in CATEGORIES.items():
@@ -213,7 +239,8 @@ def main() -> None:
             metrics=performance,
         )
         report = evaluate_category(
-            name, records, gen_codes, probes_full=probes_full, probes_boundary=probes_boundary
+            name, records, gen_codes, probes_full=probes_full, probes_boundary=probes_boundary,
+            hidden_count=args.hidden_count, hidden_seed=args.hidden_seed,
         )
         report.update(performance)
         reports.append(report)
@@ -236,6 +263,9 @@ def main() -> None:
                     "checkpoint": str(args.checkpoint),
                     "step": step,
                     "device": str(device),
+                    "evaluation_protocol": HIDDEN_PROTOCOL,
+                    "hidden_count": args.hidden_count,
+                    "hidden_seed": args.hidden_seed,
                     "max_gpu_memory_bytes": peak,
                     "combination_generalization_rate": combination_rate,
                     "categories": reports,
