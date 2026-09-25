@@ -90,18 +90,21 @@ JSONLを読み、1レコードを `[bos, task, *instruction_ids, code, *code_ids
 
 ## generate.py
 
-長さの違うプロンプトを左padして貪欲デコードします。KVキャッシュはなく、毎回系列全体を計算します。
+長さの違うプロンプトを左padして貪欲デコードまたは温度付きサンプリングを行います。KVキャッシュはなく、毎回系列全体を計算します。
 
 ### 関数
 
 | 関数 | 説明 |
 | --- | --- |
+| `batch_generate(model, prompts, *, eos_id, pad_id, max_new_tokens, temperature=0.0, generator=None, metrics=None)` | 温度0ならargmax、正ならsoftmax(logits / temperature)から抽出。top-k/top-pなし。専用の `torch.Generator` を渡して乱数を再現可能 |
 | `batch_greedy_generate(model, prompts, *, eos_id, pad_id, max_new_tokens)` | 左pad・プロンプト・生成分を含むID列を各行について返す。空でないプロンプト群が前提 |
 | `greedy_generate(model, prompt_ids, *, eos_id, pad_id, max_new_tokens)` | 上記を1件で呼び、1本のID列を返す |
 
 生成分は `row[prompt_width:]` です。追加できる長さは `max(0, min(max_new_tokens, model.cfg.max_seq_len - prompt_width))`。EOSを出した行は以後padを追加し、全行EOSまたは予算終了で止まります。EOS終了自体を評価の合格条件にはしていません。
 
 生成中だけ `eval()` に切り替え、終了・例外時に元のtrain/eval状態へ戻します。勾配は作りません。
+
+訓練中の評価は `batch_greedy_generate` を使い、従来どおりtemperature=0です。単独評価はpass@1に温度0、pass@5に温度0.7の別の5候補を使います。
 
 ## checkpoint.py
 

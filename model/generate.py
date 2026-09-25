@@ -1,7 +1,8 @@
-"""貪欲デコード(temperature=0)による生成。訓練中の定期評価用。"""
+"""貪欲デコードと温度付きサンプリング。訓練中の評価は引き続き貪欲生成。"""
 
 from __future__ import annotations
 
+import math
 import time
 
 import torch
@@ -10,7 +11,7 @@ from model.transformer import BokuNanoModel
 
 # この関数は改善の余地あり。読みづらめ
 @torch.no_grad()
-def batch_greedy_generate(
+def batch_generate(
     model: BokuNanoModel, # Transformer本体
     prompts: list[list[int]], # プロンプトのバッチ。トークンidの列のリストのリスト。
     *, # これ以降はキーワード引数専用にする。つまり、名前を指定して渡さなければならない。
@@ -18,15 +19,24 @@ def batch_greedy_generate(
     pad_id: int,
     metrics: dict[str, float | int] | None = None,
     max_new_tokens: int, # 最大何トークンまで生成し続けるか
+    temperature: float = 0.0,
+    generator: torch.Generator | None = None,
 ) -> list[list[int]]:
     """返り値のshapeは(batch, seq_len)。プロンプトの数だけの、プロンプトのトークンから生成されたトークンまでの一件分が入る。
     
-    複数プロンプトに対し、temperature=0で生成する。モデルの性能評価用。
+    temperature=0ならargmax、正ならsoftmax(logits / temperature)から抽出する。
+    top-k/top-pによる打ち切りは行わない。乱数はgeneratorで再現できる。
 
     プロンプトの長さが揃っていないので、短い方の先頭を`pad_id`で埋める(left padding)。
 
     ある行が`eos_id`を出した後は、以降その行にはモデルの予測を使わず`pad_id`で埋める。
     """
+    if not math.isfinite(temperature) or temperature < 0:
+        raise ValueError("temperatureは0以上の有限値にしてください")
+    if not prompts:
+        return []
+    if any(not prompt for prompt in prompts):
+        raise ValueError("空のプロンプトは生成できません")
     device = next(model.parameters()).device # モデルが扱っているデバイス
     if metrics is not None:
         if device.type == "cuda":
@@ -59,7 +69,14 @@ def batch_greedy_generate(
             position_ids = (attention_mask.cumsum(dim=-1) - 1).clamp(min=0)
             logits = model(ids, attention_mask=attention_mask, position_ids=position_ids)
             # logitsの形は(batch, seq_len, vocab_size)。
-            next_ids = logits[:, -1, :].argmax(dim=-1)
+            next_logits = logits[:, -1, :]
+            if temperature == 0:
+                next_ids = next_logits.argmax(dim=-1)
+            else:
+                probabilities = torch.softmax(next_logits.float() / temperature, dim=-1)
+                next_ids = torch.multinomial(
+                    probabilities, num_samples=1, generator=generator
+                ).squeeze(-1)
 
             # finished、was_finishedは、終わっているかどうかの真偽値を要素に持つテンソル。1次元でサイズはbatch
             was_finished = finished
@@ -104,6 +121,22 @@ def batch_greedy_generate(
             if metrics["generation_seconds"] else 0.0
         )
     return rows
+
+
+def batch_greedy_generate(
+    model: BokuNanoModel,
+    prompts: list[list[int]],
+    *,
+    eos_id: int,
+    pad_id: int,
+    max_new_tokens: int,
+    metrics: dict[str, float | int] | None = None,
+) -> list[list[int]]:
+    """既存の訓練時評価用API。temperature=0でバッチ生成する。"""
+    return batch_generate(
+        model, prompts, eos_id=eos_id, pad_id=pad_id,
+        max_new_tokens=max_new_tokens, metrics=metrics, temperature=0.0,
+    )
 
 
 @torch.no_grad()

@@ -247,14 +247,34 @@ python -m scripts.evaluate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt -
 | `--seed` | 通常テストの抽出seed 0 |
 | `--hidden-count` | 問題ごとの新規ランダム入力数。既定20、20未満はエラー |
 | `--hidden-seed` | hidden入力専用seed。既定1,000,003。問題文と合わせて入力を再現 |
+| `--generation-seed` | pass@5のサンプリング専用seed。既定0。hidden入力のseedとは独立 |
 | `--batch-size` | 一度に生成する件数64 |
 | `--max-new-tokens` | 192。モデルの残り系列長も上限になる |
 | `--out` | 省略時は標準出力のみ。指定時は生成コードと個別合否を含むJSONを書き出す |
 | `TOKENIZER_PATH` / `PROBES_PATH` | 現行tokenizerと凍結入力v1の固定パス |
 
-言い換え・組合せは全件を使い、通常テストだけを抽出します。`pass_rate` は問題ごとのhidden入力すべてで参照コードと一致した割合です。hidden入力はデータ構築用の固定148入力との重複と、同じ問題内の重複を除きます。問題文と専用seedで決まるため、抽出順や生成コードに依存しません。
+言い換え・組合せは全件を使い、通常テストだけを抽出します。各問題について次の2条件で別々に生成します。
+
+| 指標（JSONキー） | 生成条件 | 合格条件 |
+| --- | --- | --- |
+| `pass@1`（従来の `pass_rate` と同じ） | temperature=0の貪欲生成を1件 | その候補が全hidden入力に合格 |
+| `pass@5` | temperature=0.7のサンプリングを5件 | 5候補のうち1候補以上が全hidden入力に合格 |
+
+分母は候補数ではなく問題数です。貪欲生成の候補はpass@5に混ぜず、同じ問題の全6候補を同じhidden入力で判定します。重複候補も残し、正解が出ても5件分すべてを記録します。top-k/top-pは使いません。生成分布が異なるため、pass@5がpass@1以上になる保証はありません。
+
+hidden入力は問題ごとに20件以上で、データ構築用の固定148入力との重複と、同じ問題内の重複を除きます。問題文と専用seedで決まるため、抽出順や生成コードに依存しません。
+
+`--out` には両指標の温度・候補数を `decoding` に、生成seed・バッチサイズ・生成長上限・問題抽出条件も保存します。各問題の `generated_code` は貪欲生成、`sampled_candidates` は5候補それぞれのコード・検査フラグ・合否です。生成の再現には同じモデル・環境・バッチサイズ・問題順序が必要です。
+
+```bash
+python -m scripts.evaluate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt --limit 200 --generation-seed 0 --out report.json
+```
+
+`tests/test_pass_at_k.py` は小型CPUモデルと少数の架空問題で、温度・候補数・問題単位の集計・hidden入力の共有・JSON保存を検査します。実モデルの評価とは別の回帰テストです。
 
 固定148入力の合格率は `fixed_probe_pass_rate` に別途保存します。境界値20入力の合格率は、評価した3集合の件数で加重集計します。`--out` には `evaluation_protocol`、hidden入力数・seed、各問題の実際の `hidden_inputs` を保存します。以前の `pass_rate` は固定入力基準なので、新しいhidden基準の値と直接比較しないでください。
+
+5候補の固定入力・境界値での合格率は `fixed_probe_pass_at_5` / `boundary_pass_at_5`、境界値の全カテゴリ合算は `boundary_pass_at_5_overall` です。これらはhidden基準のpass@5とは別指標です。
 
 存在しないデータファイルはスキップします。`--out` の親ディレクトリは自動作成しません。EOSを出したかどうかは合格条件に含まれません。学習中の生成評価は従来の固定probeを使い、hidden入力は単独の最終評価でのみ使います。
 
@@ -270,6 +290,8 @@ python -m scripts.evaluate --checkpoint runs/checkpoints/RUN_ID/step_006000.pt -
 | `executable_rate` | 安全性とシグネチャの検査を通り、全probeでtimeout・例外なく実行 |
 
 構文エラーの場合は4項目とも失敗です。Safe-ASTとシグネチャは独立に判定します。Executableは出力の正しさを問いません。誤答が出ても後続probeの実行を続けます。単独評価のJSONには各生成コードの判定フラグと `errors`（検査失敗・実行例外の理由）も保存します。
+
+カテゴリ直下の4つの診断率は貪欲生成の全n候補が分母です。`pass5_diagnostics` 内の診断率はサンプリングした全5n候補が分母で、問題単位のpass@5とは区別します。`generation_by_metric` は各生成条件の性能計測、カテゴリ直下のtokens/sは両条件を合算した生成トークン数／生成秒数です。
 
 Validation lossは従来どおり学習時の `val_loss` として記録します。組合せ汎化率は組合せカテゴリの `pass_rate` に加え、単独評価JSONの `combination_generalization_rate` にも保存します。組合せデータが無い場合は `null` です。単独評価の実行成功率・合格率はhidden入力基準、学習中の生成評価は固定probe基準です。
 

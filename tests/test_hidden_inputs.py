@@ -88,7 +88,8 @@ def test_evaluation_cli_saves_hidden_protocol_and_inputs(monkeypatch, tmp_path):
     monkeypatch.setattr(evaluate, "Tokenizer", SimpleNamespace(from_file=lambda p: None))
     monkeypatch.setattr(evaluate, "load_special_ids", lambda t: None)
     monkeypatch.setattr(evaluate, "load_model", lambda *args: (None, 123))
-    monkeypatch.setattr(evaluate, "generate_codes", lambda *args, **kw: [REFERENCE])
+    monkeypatch.setattr(evaluate, "generate_codes", lambda model, tokenizer, ids, records, **kw:
+                        [REFERENCE] * len(records))
     monkeypatch.setattr(sys, "argv", ["evaluate", "--checkpoint", "unused.pt",
         "--hidden-count", "25", "--hidden-seed", "42", "--out", str(output)])
     evaluate.main()
